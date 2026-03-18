@@ -2,6 +2,9 @@
 
 All-in-one Windows provisioning and configuration utility with a premium dark WPF GUI. Inspired by Chris Titus Tech's WinUtil -- rebuilt from scratch with a polished aesthetic.
 
+
+![Screenshot](screenshot.png)
+
 ## Features
 
 ### System Info Header
