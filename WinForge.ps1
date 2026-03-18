@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    WinForge v0.0.1 - Premium Windows System Utility
+    WinForge v0.1.0 - Premium Windows System Utility
 .DESCRIPTION
     All-in-one Windows utility: Install programs, apply system tweaks,
     configure features, and manage Windows Updates.
@@ -44,6 +44,7 @@ $script:AppCategories = [ordered]@{
         @{Name='Tor Browser';           Id='TorProject.TorBrowser'}
         @{Name='LibreWolf';             Id='LibreWolf.LibreWolf'}
         @{Name='Ungoogled Chromium';    Id='eloston.ungoogled-chromium'}
+        @{Name='Zen Browser';           Id='zen-team.Zen'}
     )
     'Communications' = @(
         @{Name='Discord';               Id='Discord.Discord'}
@@ -54,6 +55,7 @@ $script:AppCategories = [ordered]@{
         @{Name='Signal';                Id='OpenWhisperSystems.Signal'}
         @{Name='Thunderbird';           Id='Mozilla.Thunderbird'}
         @{Name='Skype';                 Id='Microsoft.Skype'}
+        @{Name='Element';               Id='Element.Element'}
     )
     'Development' = @(
         @{Name='Visual Studio Code';    Id='Microsoft.VisualStudioCode'}
@@ -214,7 +216,7 @@ $script:ConfigFeatures = [ordered]@{
 $xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="WinForge v0.0.1" Width="1100" Height="740" MinWidth="900" MinHeight="600"
+        Title="WinForge v0.1.0" Width="1100" Height="740" MinWidth="900" MinHeight="600"
         WindowStartupLocation="CenterScreen" Background="#0d0d12"
         FontFamily="Segoe UI" FontSize="13">
     <Window.Resources>
@@ -508,7 +510,7 @@ $xaml = @'
                 <Border DockPanel.Dock="Top" Padding="16,20,16,16">
                     <StackPanel>
                         <TextBlock Text="WINFORGE" FontSize="20" FontWeight="Bold" Foreground="#a78bfa" Margin="0,0,0,2"/>
-                        <TextBlock Text="v0.0.1" FontSize="10" Foreground="#555570"/>
+                        <TextBlock Text="v0.1.0" FontSize="10" Foreground="#555570"/>
                         <Border Height="1" Background="#1e1e36" Margin="0,14,0,10"/>
                     </StackPanel>
                 </Border>
@@ -537,6 +539,50 @@ $xaml = @'
 
         <!-- Main Content -->
         <DockPanel Grid.Column="1">
+
+            <!-- System Info Header -->
+            <Border DockPanel.Dock="Top" Background="#0a0a14" BorderBrush="#1a1a2e" BorderThickness="0,0,0,1" Padding="20,12">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition/>
+                        <RowDefinition/>
+                    </Grid.RowDefinitions>
+                    <StackPanel Grid.Column="0" Grid.Row="0" Margin="0,0,16,4">
+                        <TextBlock Text="COMPUTER" FontSize="9" Foreground="#555570" FontWeight="Bold"/>
+                        <TextBlock x:Name="infoComputer" Text="..." FontSize="11.5" Foreground="#e8e8f0"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Grid.Row="0" Margin="0,0,16,4">
+                        <TextBlock Text="OS / BUILD" FontSize="9" Foreground="#555570" FontWeight="Bold"/>
+                        <TextBlock x:Name="infoOS" Text="..." FontSize="11.5" Foreground="#e8e8f0"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="2" Grid.Row="0" Margin="0,0,16,4">
+                        <TextBlock Text="CPU" FontSize="9" Foreground="#555570" FontWeight="Bold"/>
+                        <TextBlock x:Name="infoCPU" Text="..." FontSize="11.5" Foreground="#e8e8f0" TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="3" Grid.Row="0" Margin="0,0,0,4">
+                        <TextBlock Text="RAM" FontSize="9" Foreground="#555570" FontWeight="Bold"/>
+                        <TextBlock x:Name="infoRAM" Text="..." FontSize="11.5" Foreground="#e8e8f0"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="0" Grid.Row="1" Margin="0,4,16,0">
+                        <TextBlock Text="USER" FontSize="9" Foreground="#555570" FontWeight="Bold"/>
+                        <TextBlock x:Name="infoUser" Text="..." FontSize="11.5" Foreground="#e8e8f0"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Grid.Row="1" Margin="0,4,16,0">
+                        <TextBlock Text="DOMAIN / WORKGROUP" FontSize="9" Foreground="#555570" FontWeight="Bold"/>
+                        <TextBlock x:Name="infoDomain" Text="..." FontSize="11.5" Foreground="#e8e8f0"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="2" Grid.Row="1" Margin="0,4,16,0" Grid.ColumnSpan="2">
+                        <TextBlock Text="STORAGE" FontSize="9" Foreground="#555570" FontWeight="Bold"/>
+                        <TextBlock x:Name="infoStorage" Text="..." FontSize="11.5" Foreground="#e8e8f0"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
 
             <!-- Bottom Log Panel -->
             <Border DockPanel.Dock="Bottom" Background="#08080e" BorderBrush="#1a1a2e" BorderThickness="0,1,0,0" MaxHeight="160">
@@ -711,6 +757,13 @@ $pnlTweaks          = $window.FindName('pnlTweaks')
 $pnlConfig          = $window.FindName('pnlConfig')
 $pnlUpdates         = $window.FindName('pnlUpdates')
 $txtSysInfo         = $window.FindName('txtSysInfo')
+$infoComputer       = $window.FindName('infoComputer')
+$infoOS             = $window.FindName('infoOS')
+$infoCPU            = $window.FindName('infoCPU')
+$infoRAM            = $window.FindName('infoRAM')
+$infoUser           = $window.FindName('infoUser')
+$infoDomain         = $window.FindName('infoDomain')
+$infoStorage        = $window.FindName('infoStorage')
 
 # Pages
 $pageInstall = $window.FindName('pageInstall')
@@ -759,10 +812,38 @@ $btnClearLog.Add_Click({ $txtLog.Text = '' })
 
 # ── System Info ────────────────────────────────────────────────────────────────
 try {
-    $os = (Get-CimInstance Win32_OperatingSystem).Caption
-    $build = [System.Environment]::OSVersion.Version.Build
-    $ram = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
-    $txtSysInfo.Text = "$os`nBuild $build | ${ram}GB RAM"
+    $wmiOS   = Get-CimInstance Win32_OperatingSystem
+    $wmiCS   = Get-CimInstance Win32_ComputerSystem
+    $wmiCPU  = Get-CimInstance Win32_Processor | Select-Object -First 1
+    $build   = [System.Environment]::OSVersion.Version.Build
+
+    $infoComputer.Text = $env:COMPUTERNAME
+    $infoOS.Text       = "$($wmiOS.Caption) (Build $build)"
+    $infoCPU.Text      = ($wmiCPU.Name -replace '\s+',' ').Trim()
+    $ramGB             = [math]::Round($wmiCS.TotalPhysicalMemory / 1GB, 1)
+    $infoRAM.Text      = "${ramGB} GB"
+    $infoUser.Text     = "$env:USERDOMAIN\$env:USERNAME"
+
+    if ($wmiCS.PartOfDomain) {
+        $infoDomain.Text = $wmiCS.Domain
+    } else {
+        $infoDomain.Text = $wmiCS.Workgroup
+    }
+
+    # Storage info - system drive
+    $sysDrive   = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$($env:SystemDrive)'"
+    $totalGB    = [math]::Round($sysDrive.Size / 1GB, 0)
+    $freeGB     = [math]::Round($sysDrive.FreeSpace / 1GB, 1)
+    $diskType   = "HDD"
+    try {
+        $physDisk = Get-PhysicalDisk -ErrorAction Stop | Select-Object -First 1
+        if ($physDisk.MediaType -eq 'SSD' -or $physDisk.MediaType -eq 'NVMe') { $diskType = $physDisk.MediaType }
+        elseif ($physDisk.BusType -eq 'NVMe') { $diskType = "NVMe" }
+        elseif ($physDisk.MediaType -match 'Solid') { $diskType = "SSD" }
+    } catch {}
+    $infoStorage.Text = "$($env:SystemDrive) ${diskType} ${totalGB}GB total, ${freeGB}GB free"
+
+    $txtSysInfo.Text = "$($wmiOS.Caption)`nBuild $build | ${ramGB}GB RAM"
 } catch { $txtSysInfo.Text = "Windows" }
 
 # ── BUILD INSTALL TAB ─────────────────────────────────────────────────────────
@@ -868,48 +949,73 @@ function Run-Async {
 $window.FindName('btnInstallSelected').Add_Click({
     $apps = Get-SelectedApps
     if ($apps.Count -eq 0) { Write-Log "No applications selected."; return }
-    Write-Log "Installing $($apps.Count) application(s)..."
+    $total = $apps.Count
+    Write-Log "=== Installing $total application(s) ==="
     $window.FindName('btnInstallSelected').IsEnabled = $false
+    $script:InstallQueue = [System.Collections.ArrayList]@($apps)
+    $script:InstallIndex = 0
+    $script:InstallSuccess = 0
+    $script:InstallFail = 0
+    $script:InstallTotal = $total
 
-    foreach ($appId in $apps) {
+    function Start-NextInstall {
+        if ($script:InstallIndex -ge $script:InstallTotal) {
+            Write-Log "=== Install complete: $($script:InstallSuccess) succeeded, $($script:InstallFail) failed out of $($script:InstallTotal) ==="
+            $window.FindName('btnInstallSelected').IsEnabled = $true
+            return
+        }
+        $idx = $script:InstallIndex
+        $appId = $script:InstallQueue[$idx]
         $name = $script:AppCheckboxes[$appId].Content
-        Write-Log "Installing: $name ($appId)..."
-        $id = $appId
+        $num = $idx + 1
+        Write-Log "Installing $num of $($script:InstallTotal): $name ($appId)..."
+
         $ps = [PowerShell]::Create()
         $ps.AddScript({
             param($pkgId)
+            $output = @()
             try {
-                $result = & winget install --id $pkgId --accept-source-agreements --accept-package-agreements --silent 2>&1
-                return "$pkgId|SUCCESS|$($result -join ' ')"
+                $lines = & winget install --id $pkgId --accept-source-agreements --accept-package-agreements --silent 2>&1
+                foreach ($l in $lines) { $output += "$l" }
+                return "SUCCESS|$($output -join '`n')"
             } catch {
-                return "$pkgId|FAIL|$($_.Exception.Message)"
+                return "FAIL|$($_.Exception.Message)"
             }
-        }).AddArgument($id) | Out-Null
+        }).AddArgument($appId) | Out-Null
         $handle = $ps.BeginInvoke()
         $timer = New-Object System.Windows.Threading.DispatcherTimer
         $timer.Interval = [TimeSpan]::FromMilliseconds(500)
-        $timer.Tag = @{ PS=$ps; Handle=$handle; Name=$name; Id=$id }
+        $timer.Tag = @{ PS=$ps; Handle=$handle; Name=$name; Id=$appId }
         $timer.Add_Tick({
             $ctx = $this.Tag
             if ($ctx.Handle.IsCompleted) {
                 $this.Stop()
                 try {
-                    $res = $ctx.PS.EndInvoke($ctx.Handle)
-                    $parts = "$res".Split('|')
-                    if ($parts[1] -eq 'SUCCESS') {
+                    $res = ($ctx.PS.EndInvoke($ctx.Handle) | Out-String).Trim()
+                    if ($res -match '^SUCCESS') {
+                        $script:InstallSuccess++
+                        $detail = $res -replace '^SUCCESS\|',''
                         Write-Log "[OK] $($ctx.Name) installed successfully."
+                        if ($detail -and $detail.Length -gt 0 -and $detail.Length -lt 500) {
+                            Write-Log "    $detail"
+                        }
                     } else {
-                        Write-Log "[!] $($ctx.Name): $($parts[2])"
+                        $script:InstallFail++
+                        $detail = $res -replace '^FAIL\|',''
+                        Write-Log "[FAIL] $($ctx.Name): $detail"
                     }
                 } catch {
-                    Write-Log "[!] $($ctx.Name) installation error."
+                    $script:InstallFail++
+                    Write-Log "[FAIL] $($ctx.Name) installation error."
                 }
                 $ctx.PS.Dispose()
+                $script:InstallIndex++
+                Start-NextInstall
             }
         }.GetNewClosure())
         $timer.Start()
     }
-    $window.FindName('btnInstallSelected').IsEnabled = $true
+    Start-NextInstall
 })
 
 $window.FindName('btnUpgradeAll').Add_Click({
@@ -1598,6 +1704,6 @@ $navImport.Add_Click({
 })
 
 # ── Launch ─────────────────────────────────────────────────────────────────────
-Write-Log "WinForge v0.0.1 initialized. Ready."
+Write-Log "WinForge v0.1.0 initialized. Ready."
 Write-Log "System: $($txtSysInfo.Text -replace "`n",' | ')"
 $window.ShowDialog() | Out-Null

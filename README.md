@@ -2,22 +2,28 @@
 
 All-in-one Windows provisioning and configuration utility with a premium dark WPF GUI. Inspired by Chris Titus Tech's WinUtil -- rebuilt from scratch with a polished aesthetic.
 
-## Tabs
+## Features
+
+### System Info Header
+Compact 2-column grid showing Computer Name, OS/Build, CPU, RAM, User, Domain/Workgroup, and Storage (type + free space).
 
 ### Install
-Winget-based app installer with 90+ apps organized by category: Browsers, Communications, Development, Documents, Gaming, Multimedia, Pro Tools, Utilities.
+Winget-based app installer with 95+ apps organized by category: Browsers, Communications, Development, Documents, Gaming, Multimedia, Pro Tools, Utilities. Sequential install with progress counters and log output. Presets for Developer, Gamer, Productivity, and Essentials workflows.
 
 ### Tweaks
-Checkbox-driven system modifications in three groups:
+Checkbox-driven system modifications with descriptions and tooltips:
 - **Essential** - Telemetry, temp files, hibernation, services, Widgets
 - **Advanced** - Cortana, GameDVR, Copilot, Recall, Bing search, classic context menu, Ultimate Performance plan
 - **Privacy** - Advertising ID, app launch tracking, diagnostic data, clipboard history, speech recognition
 
-### Features
-Windows optional features and capabilities management (.NET 3.5, Hyper-V, WSL, etc.).
+### Config
+Windows optional features and system fixes (.NET 3.5, Hyper-V, WSL, SFC, DISM, network reset). Legacy control panel shortcuts.
 
 ### Updates
-Windows Update configuration and management.
+DNS configuration (Google, Cloudflare, Quad9, OpenDNS, AdGuard), Windows Update policy management, pause/reset.
+
+### Config Profiles
+Export and import your selections (apps + tweaks) as JSON files. Share configurations between machines or save favorite setups.
 
 ## Usage
 
