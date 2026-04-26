@@ -748,6 +748,15 @@ $xaml = @'
 # ── Parse XAML & Build Window ──────────────────────────────────────────────────
 $window = [System.Windows.Markup.XamlReader]::Parse($xaml)
 
+# codex-branding:start
+                try {
+                    $brandingIconPath = Join-Path $PSScriptRoot 'icon.ico'
+                    if (Test-Path $brandingIconPath) {
+                        $window.Icon = [System.Windows.Media.Imaging.BitmapFrame]::Create((New-Object System.Uri($brandingIconPath)))
+                    }
+                } catch {
+                }
+                # codex-branding:end
 # ── Find Controls ──────────────────────────────────────────────────────────────
 $txtLog             = $window.FindName('txtLog')
 $btnClearLog        = $window.FindName('btnClearLog')
