@@ -664,6 +664,81 @@ function Start-WinForgeHealthCheck {
     $timer.Start()
 }
 
+function Get-WinForgeCrashLogPath {
+    [CmdletBinding()]
+    param([string]$Path)
+
+    if (-not [string]::IsNullOrWhiteSpace($Path)) { return $Path }
+    return (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'WinForge\crash.log')
+}
+
+function Write-WinForgeCrashLog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Exception]$Exception,
+        [string]$Context = 'Unhandled exception',
+        [string]$Path
+    )
+
+    $logPath = Get-WinForgeCrashLogPath -Path $Path
+    try {
+        $directory = Split-Path -Parent $logPath
+        if (-not [string]::IsNullOrWhiteSpace($directory)) { New-Item -Path $directory -ItemType Directory -Force | Out-Null }
+        $entry = @(
+            '=== WinForge crash report ==='
+            ('Timestamp: {0}' -f (Get-Date).ToString('o'))
+            ('Version: {0}' -f $script:WinForgeVersion)
+            ('Context: {0}' -f $Context)
+            ('Computer: {0}' -f $env:COMPUTERNAME)
+            ('User: {0}\{1}' -f $env:USERDOMAIN, $env:USERNAME)
+            ''
+            $Exception.ToString()
+            ''
+        ) -join [Environment]::NewLine
+        Add-Content -LiteralPath $logPath -Value $entry -Encoding UTF8
+        if ((Get-Item -LiteralPath $logPath).Length -gt 5MB) {
+            $tail = @(Get-Content -LiteralPath $logPath -Tail 4000)
+            $tail | Set-Content -LiteralPath $logPath -Encoding UTF8
+        }
+        return $logPath
+    } catch {
+        Write-Debug ("WinForge crash log write failed: {0}" -f $_.Exception.Message)
+        return $false
+    }
+}
+
+function Get-WinForgeCrashReport {
+    [CmdletBinding()]
+    param([string]$Path)
+
+    $logPath = Get-WinForgeCrashLogPath -Path $Path
+    if (-not (Test-Path -LiteralPath $logPath)) { return $null }
+    try { return (Get-Content -LiteralPath $logPath -Raw -ErrorAction Stop) }
+    catch {
+        Write-Debug ("WinForge crash log read failed: {0}" -f $_.Exception.Message)
+        return $null
+    }
+}
+
+function Copy-WinForgeCrashReport {
+    [CmdletBinding()]
+    param([string]$Path)
+
+    $report = Get-WinForgeCrashReport -Path $Path
+    if ([string]::IsNullOrWhiteSpace($report)) {
+        if ($txtLog) { Write-Log 'No crash report is available to copy.' }
+        return $false
+    }
+    try {
+        [System.Windows.Clipboard]::SetText($report)
+        if ($txtLog) { Write-Log 'Crash report copied to the clipboard. Review it before sharing.' }
+        return $true
+    } catch {
+        if ($txtLog) { Write-Log ("[!] Could not copy the crash report: {0}" -f $_.Exception.Message) }
+        return $false
+    }
+}
+
 # ── Core helpers ──────────────────────────────────────────────────────────────
 # These helpers intentionally avoid WPF state so they can be exercised by the
 # headless test harness and reused by background package workers.
@@ -932,9 +1007,48 @@ $xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="WinForge v0.1.0" Width="1100" Height="740" MinWidth="900" MinHeight="600"
-        WindowStartupLocation="CenterScreen" Background="#0d0d12"
+        WindowStartupLocation="CenterScreen" Background="{DynamicResource Theme.Window}"
         FontFamily="Segoe UI" FontSize="13">
     <Window.Resources>
+        <!-- Theme brushes are replaced at runtime by Set-WinForgeTheme. -->
+        <SolidColorBrush x:Key="Theme.Window" Color="#0d0d12"/>
+        <SolidColorBrush x:Key="Theme.Shell" Color="#0a0a14"/>
+        <SolidColorBrush x:Key="Theme.ShellDeep" Color="#08080e"/>
+        <SolidColorBrush x:Key="Theme.Surface" Color="#0d0d16"/>
+        <SolidColorBrush x:Key="Theme.Card" Color="#12121e"/>
+        <SolidColorBrush x:Key="Theme.Toolbar" Color="#0b0b14"/>
+        <SolidColorBrush x:Key="Theme.LogHeader" Color="#0c0c16"/>
+        <SolidColorBrush x:Key="Theme.Input" Color="#1e1e2e"/>
+        <SolidColorBrush x:Key="Theme.InputPopup" Color="#1a1a2e"/>
+        <SolidColorBrush x:Key="Theme.Border" Color="#333346"/>
+        <SolidColorBrush x:Key="Theme.Divider" Color="#1e1e36"/>
+        <SolidColorBrush x:Key="Theme.Hover" Color="#282840"/>
+        <SolidColorBrush x:Key="Theme.PanelPressed" Color="#282844"/>
+        <SolidColorBrush x:Key="Theme.NavHover" Color="#18182a"/>
+        <SolidColorBrush x:Key="Theme.Panel" Color="#16162a"/>
+        <SolidColorBrush x:Key="Theme.PanelBorder" Color="#2a2a42"/>
+        <SolidColorBrush x:Key="Theme.Text" Color="#d4d4e8"/>
+        <SolidColorBrush x:Key="Theme.TextBright" Color="#e8e8f0"/>
+        <SolidColorBrush x:Key="Theme.TextMuted" Color="#8888a0"/>
+        <SolidColorBrush x:Key="Theme.TextSubtle" Color="#666680"/>
+        <SolidColorBrush x:Key="Theme.TextFaint" Color="#555570"/>
+        <SolidColorBrush x:Key="Theme.Label" Color="#444460"/>
+        <SolidColorBrush x:Key="Theme.Arrow" Color="#9999aa"/>
+        <SolidColorBrush x:Key="Theme.Accent" Color="#6c5ce7"/>
+        <SolidColorBrush x:Key="Theme.AccentHover" Color="#7c6ff0"/>
+        <SolidColorBrush x:Key="Theme.AccentPressed" Color="#5a4bd4"/>
+        <SolidColorBrush x:Key="Theme.AccentText" Color="#a78bfa"/>
+        <SolidColorBrush x:Key="Theme.White" Color="#ffffff"/>
+        <SolidColorBrush x:Key="Theme.Danger" Color="#dc2626"/>
+        <SolidColorBrush x:Key="Theme.DangerHover" Color="#ef4444"/>
+        <SolidColorBrush x:Key="Theme.DangerPressed" Color="#b91c1c"/>
+        <SolidColorBrush x:Key="Theme.SuccessButton" Color="#16a34a"/>
+        <SolidColorBrush x:Key="Theme.SuccessButtonHover" Color="#22c55e"/>
+        <SolidColorBrush x:Key="Theme.SuccessButtonPressed" Color="#15803d"/>
+        <SolidColorBrush x:Key="Theme.Log" Color="#4ade80"/>
+        <SolidColorBrush x:Key="Theme.Warning" Color="#facc15"/>
+        <SolidColorBrush x:Key="Theme.RiskRed" Color="#f87171"/>
+
         <!-- ComboBox Toggle Button Template -->
         <ControlTemplate x:Key="ComboBoxToggleButton" TargetType="ToggleButton">
             <Grid>
@@ -942,13 +1056,13 @@ $xaml = @'
                     <ColumnDefinition/>
                     <ColumnDefinition Width="20"/>
                 </Grid.ColumnDefinitions>
-                <Border x:Name="Border" Grid.ColumnSpan="2" Background="#1e1e2e" BorderBrush="#333346" BorderThickness="1" CornerRadius="4"/>
-                <Border Grid.Column="0" Background="#1e1e2e" BorderBrush="Transparent" BorderThickness="0" CornerRadius="4,0,0,4" Margin="1"/>
-                <Path x:Name="Arrow" Grid.Column="1" Fill="#9999aa" HorizontalAlignment="Center" VerticalAlignment="Center" Data="M0,0 L4,4 L8,0 Z"/>
+                <Border x:Name="Border" Grid.ColumnSpan="2" Background="{DynamicResource Theme.Input}" BorderBrush="{DynamicResource Theme.Border}" BorderThickness="1" CornerRadius="4"/>
+                <Border Grid.Column="0" Background="{DynamicResource Theme.Input}" BorderBrush="Transparent" BorderThickness="0" CornerRadius="4,0,0,4" Margin="1"/>
+                <Path x:Name="Arrow" Grid.Column="1" Fill="{DynamicResource Theme.Arrow}" HorizontalAlignment="Center" VerticalAlignment="Center" Data="M0,0 L4,4 L8,0 Z"/>
             </Grid>
             <ControlTemplate.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter TargetName="Border" Property="Background" Value="#282840"/>
+                    <Setter TargetName="Border" Property="Background" Value="{DynamicResource Theme.Hover}"/>
                 </Trigger>
             </ControlTemplate.Triggers>
         </ControlTemplate>
@@ -965,7 +1079,7 @@ $xaml = @'
                        AllowsTransparency="True" Focusable="False" PopupAnimation="Slide">
                     <Grid Name="DropDown" SnapsToDevicePixels="True"
                           MinWidth="{TemplateBinding ActualWidth}" MaxHeight="{TemplateBinding MaxDropDownHeight}">
-                        <Border x:Name="DropDownBorder" Background="#1a1a2e" BorderThickness="1" BorderBrush="#333346" CornerRadius="4">
+                        <Border x:Name="DropDownBorder" Background="{DynamicResource Theme.InputPopup}" BorderThickness="1" BorderBrush="{DynamicResource Theme.Border}" CornerRadius="4">
                             <Border.Effect>
                                 <DropShadowEffect Color="Black" BlurRadius="12" ShadowDepth="3" Opacity="0.6"/>
                             </Border.Effect>
@@ -978,13 +1092,13 @@ $xaml = @'
             </Grid>
         </ControlTemplate>
         <Style TargetType="ComboBox">
-            <Setter Property="Foreground" Value="#d4d4e8"/>
-            <Setter Property="Background" Value="#1e1e2e"/>
+            <Setter Property="Foreground" Value="{DynamicResource Theme.Text}"/>
+            <Setter Property="Background" Value="{DynamicResource Theme.Input}"/>
             <Setter Property="Height" Value="32"/>
             <Setter Property="Template" Value="{StaticResource ComboBoxTemplate}"/>
         </Style>
         <Style TargetType="ComboBoxItem">
-            <Setter Property="Foreground" Value="#d4d4e8"/>
+            <Setter Property="Foreground" Value="{DynamicResource Theme.Text}"/>
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="Padding" Value="8,6"/>
             <Setter Property="Cursor" Value="Hand"/>
@@ -996,13 +1110,13 @@ $xaml = @'
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsHighlighted" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#282840"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Theme.Hover}"/>
                             </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#282840"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Theme.Hover}"/>
                             </Trigger>
                             <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#6c5ce7"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Theme.Accent}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -1011,32 +1125,32 @@ $xaml = @'
         </Style>
         <!-- Global Styles -->
         <Style TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#d4d4e8"/>
+            <Setter Property="Foreground" Value="{DynamicResource Theme.Text}"/>
         </Style>
         <Style TargetType="TextBox">
-            <Setter Property="Background" Value="#1e1e2e"/>
-            <Setter Property="Foreground" Value="#d4d4e8"/>
-            <Setter Property="BorderBrush" Value="#333346"/>
-            <Setter Property="CaretBrush" Value="#fff"/>
-            <Setter Property="SelectionBrush" Value="#6c5ce7"/>
+            <Setter Property="Background" Value="{DynamicResource Theme.Input}"/>
+            <Setter Property="Foreground" Value="{DynamicResource Theme.Text}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource Theme.Border}"/>
+            <Setter Property="CaretBrush" Value="{DynamicResource Theme.White}"/>
+            <Setter Property="SelectionBrush" Value="{DynamicResource Theme.Accent}"/>
             <Setter Property="Padding" Value="8,6"/>
         </Style>
         <Style TargetType="CheckBox">
-            <Setter Property="Foreground" Value="#d4d4e8"/>
+            <Setter Property="Foreground" Value="{DynamicResource Theme.Text}"/>
             <Setter Property="Margin" Value="0,3"/>
             <Setter Property="Cursor" Value="Hand"/>
         </Style>
         <Style TargetType="Label">
-            <Setter Property="Foreground" Value="#d4d4e8"/>
+            <Setter Property="Foreground" Value="{DynamicResource Theme.Text}"/>
         </Style>
         <Style TargetType="ToolTip">
-            <Setter Property="Background" Value="#1a1a2e"/>
-            <Setter Property="Foreground" Value="#d4d4e8"/>
-            <Setter Property="BorderBrush" Value="#333346"/>
+            <Setter Property="Background" Value="{DynamicResource Theme.InputPopup}"/>
+            <Setter Property="Foreground" Value="{DynamicResource Theme.Text}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource Theme.Border}"/>
         </Style>
         <Style x:Key="AccentBtn" TargetType="Button">
-            <Setter Property="Background" Value="#6c5ce7"/>
-            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Background" Value="{DynamicResource Theme.Accent}"/>
+            <Setter Property="Foreground" Value="{DynamicResource Theme.White}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="20,10"/>
             <Setter Property="FontSize" Value="13"/>
@@ -1051,10 +1165,10 @@ $xaml = @'
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="#7c6ff0"/>
+                                <Setter TargetName="bd" Property="Background" Value="{DynamicResource Theme.AccentHover}"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="#5a4bd4"/>
+                                <Setter TargetName="bd" Property="Background" Value="{DynamicResource Theme.AccentPressed}"/>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter TargetName="bd" Property="Opacity" Value="0.4"/>
@@ -1065,10 +1179,10 @@ $xaml = @'
             </Setter>
         </Style>
         <Style x:Key="SecondaryBtn" TargetType="Button">
-            <Setter Property="Background" Value="#1e1e2e"/>
-            <Setter Property="Foreground" Value="#d4d4e8"/>
+            <Setter Property="Background" Value="{DynamicResource Theme.Input}"/>
+            <Setter Property="Foreground" Value="{DynamicResource Theme.Text}"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="BorderBrush" Value="#333346"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource Theme.Border}"/>
             <Setter Property="Padding" Value="16,8"/>
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="Cursor" Value="Hand"/>
@@ -1082,11 +1196,11 @@ $xaml = @'
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="#282840"/>
-                                <Setter TargetName="bd" Property="BorderBrush" Value="#6c5ce7"/>
+                                <Setter TargetName="bd" Property="Background" Value="{DynamicResource Theme.Hover}"/>
+                                <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource Theme.Accent}"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="#333346"/>
+                                <Setter TargetName="bd" Property="Background" Value="{DynamicResource Theme.Border}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -1094,8 +1208,8 @@ $xaml = @'
             </Setter>
         </Style>
         <Style x:Key="DangerBtn" TargetType="Button">
-            <Setter Property="Background" Value="#dc2626"/>
-            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Background" Value="{DynamicResource Theme.Danger}"/>
+            <Setter Property="Foreground" Value="{DynamicResource Theme.White}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="16,8"/>
             <Setter Property="FontSize" Value="12"/>
@@ -1109,10 +1223,10 @@ $xaml = @'
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="#ef4444"/>
+                                <Setter TargetName="bd" Property="Background" Value="{DynamicResource Theme.DangerHover}"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="#b91c1c"/>
+                                <Setter TargetName="bd" Property="Background" Value="{DynamicResource Theme.DangerPressed}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -1120,8 +1234,8 @@ $xaml = @'
             </Setter>
         </Style>
         <Style x:Key="SuccessBtn" TargetType="Button">
-            <Setter Property="Background" Value="#16a34a"/>
-            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Background" Value="{DynamicResource Theme.SuccessButton}"/>
+            <Setter Property="Foreground" Value="{DynamicResource Theme.White}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="16,8"/>
             <Setter Property="FontSize" Value="12"/>
@@ -1135,10 +1249,10 @@ $xaml = @'
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="#22c55e"/>
+                                <Setter TargetName="bd" Property="Background" Value="{DynamicResource Theme.SuccessButtonHover}"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="#15803d"/>
+                                <Setter TargetName="bd" Property="Background" Value="{DynamicResource Theme.SuccessButtonPressed}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -1147,7 +1261,7 @@ $xaml = @'
         </Style>
         <Style x:Key="NavBtn" TargetType="Button">
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="#8888a0"/>
+            <Setter Property="Foreground" Value="{DynamicResource Theme.TextMuted}"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Padding" Value="18,12"/>
             <Setter Property="FontSize" Value="13"/>
@@ -1163,8 +1277,8 @@ $xaml = @'
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="#18182a"/>
-                                <Setter Property="Foreground" Value="#d4d4e8"/>
+                                <Setter TargetName="bd" Property="Background" Value="{DynamicResource Theme.NavHover}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource Theme.Text}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -1172,15 +1286,15 @@ $xaml = @'
             </Setter>
         </Style>
         <Style x:Key="NavBtnActive" TargetType="Button" BasedOn="{StaticResource NavBtn}">
-            <Setter Property="Background" Value="#1e1e36"/>
-            <Setter Property="Foreground" Value="#a78bfa"/>
+            <Setter Property="Background" Value="{DynamicResource Theme.Divider}"/>
+            <Setter Property="Foreground" Value="{DynamicResource Theme.AccentText}"/>
             <Setter Property="FontWeight" Value="Bold"/>
         </Style>
         <Style x:Key="PanelBtn" TargetType="Button">
-            <Setter Property="Background" Value="#16162a"/>
-            <Setter Property="Foreground" Value="#d4d4e8"/>
+            <Setter Property="Background" Value="{DynamicResource Theme.Panel}"/>
+            <Setter Property="Foreground" Value="{DynamicResource Theme.Text}"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="BorderBrush" Value="#2a2a42"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource Theme.PanelBorder}"/>
             <Setter Property="Padding" Value="14,10"/>
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="Cursor" Value="Hand"/>
@@ -1195,11 +1309,11 @@ $xaml = @'
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="#1e1e36"/>
-                                <Setter TargetName="bd" Property="BorderBrush" Value="#6c5ce7"/>
+                                <Setter TargetName="bd" Property="Background" Value="{DynamicResource Theme.Divider}"/>
+                                <Setter TargetName="bd" Property="BorderBrush" Value="{DynamicResource Theme.Accent}"/>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="bd" Property="Background" Value="#282844"/>
+                                <Setter TargetName="bd" Property="Background" Value="{DynamicResource Theme.PanelPressed}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -1219,38 +1333,45 @@ $xaml = @'
         </Grid.ColumnDefinitions>
 
         <!-- Left Sidebar -->
-        <Border Grid.Column="0" Background="#0a0a14" BorderBrush="#1a1a2e" BorderThickness="0,0,1,0">
+        <Border Grid.Column="0" Background="{DynamicResource Theme.Shell}" BorderBrush="{DynamicResource Theme.InputPopup}" BorderThickness="0,0,1,0">
             <DockPanel>
                 <!-- Logo Area -->
                 <Border DockPanel.Dock="Top" Padding="16,20,16,16">
                     <StackPanel>
-                        <TextBlock Text="WINFORGE" FontSize="20" FontWeight="Bold" Foreground="#a78bfa" Margin="0,0,0,2"/>
-                        <TextBlock Text="v0.1.0" FontSize="10" Foreground="#555570"/>
-                        <Border Height="1" Background="#1e1e36" Margin="0,14,0,10"/>
+                        <TextBlock Text="WINFORGE" FontSize="20" FontWeight="Bold" Foreground="{DynamicResource Theme.AccentText}" Margin="0,0,0,2"/>
+                        <TextBlock Text="v0.1.0" FontSize="10" Foreground="{DynamicResource Theme.TextFaint}"/>
+                        <Border Height="1" Background="{DynamicResource Theme.Divider}" Margin="0,14,0,10"/>
                     </StackPanel>
                 </Border>
 
                 <!-- Version Info at Bottom -->
-                <Border DockPanel.Dock="Bottom" Padding="16,10" Background="#08080e">
+                <Border DockPanel.Dock="Bottom" Padding="16,10" Background="{DynamicResource Theme.ShellDeep}">
                     <StackPanel>
-                        <TextBlock x:Name="txtSysInfo" Text="" FontSize="10" Foreground="#555570" TextWrapping="Wrap"/>
+                        <TextBlock x:Name="txtSysInfo" Text="" FontSize="10" Foreground="{DynamicResource Theme.TextFaint}" TextWrapping="Wrap"/>
                     </StackPanel>
                 </Border>
 
                 <!-- Navigation -->
                 <StackPanel Margin="6,0">
-                    <TextBlock Text="NAVIGATION" FontSize="9" Foreground="#444460" FontWeight="Bold" Margin="14,4,0,8"/>
+                    <TextBlock Text="NAVIGATION" FontSize="9" Foreground="{DynamicResource Theme.Label}" FontWeight="Bold" Margin="14,4,0,8"/>
                     <Button x:Name="navInstall" Content="  Install" Style="{StaticResource NavBtnActive}"/>
                     <Button x:Name="navTweaks"  Content="  Tweaks" Style="{StaticResource NavBtn}"/>
                     <Button x:Name="navConfig"  Content="  Config" Style="{StaticResource NavBtn}"/>
                     <Button x:Name="navDeploy"  Content="  Deploy" Style="{StaticResource NavBtn}"/>
                     <Button x:Name="navUpdates" Content="  Updates" Style="{StaticResource NavBtn}"/>
-                    <Border Height="1" Background="#1e1e36" Margin="8,12"/>
-                    <TextBlock Text="QUICK ACTIONS" FontSize="9" Foreground="#444460" FontWeight="Bold" Margin="14,4,0,8"/>
+                    <Border Height="1" Background="{DynamicResource Theme.Divider}" Margin="8,12"/>
+                    <TextBlock Text="QUICK ACTIONS" FontSize="9" Foreground="{DynamicResource Theme.Label}" FontWeight="Bold" Margin="14,4,0,8"/>
                     <Button x:Name="navExport"  Content="  Export Config" Style="{StaticResource NavBtn}"/>
                     <Button x:Name="navImport"  Content="  Import Config" Style="{StaticResource NavBtn}"/>
                     <Button x:Name="navExportWinget" Content="  Export WinGet" Style="{StaticResource NavBtn}"/>
                     <Button x:Name="navImportWinget" Content="  Import WinGet" Style="{StaticResource NavBtn}"/>
+                    <Button x:Name="btnCopyCrashReport" Content="  Copy Crash Report" Style="{StaticResource NavBtn}"/>
+                    <TextBlock Text="APPEARANCE" FontSize="9" Foreground="{DynamicResource Theme.Label}" FontWeight="Bold" Margin="14,12,0,6"/>
+                    <ComboBox x:Name="cmbTheme" Width="160" Margin="10,0,10,8">
+                        <ComboBoxItem Content="Dark" IsSelected="True"/>
+                        <ComboBoxItem Content="Light"/>
+                        <ComboBoxItem Content="High Contrast"/>
+                    </ComboBox>
                 </StackPanel>
             </DockPanel>
         </Border>
@@ -1259,7 +1380,7 @@ $xaml = @'
         <DockPanel Grid.Column="1">
 
             <!-- System Info Header -->
-            <Border DockPanel.Dock="Top" Background="#0a0a14" BorderBrush="#1a1a2e" BorderThickness="0,0,0,1" Padding="20,12">
+            <Border DockPanel.Dock="Top" Background="{DynamicResource Theme.Shell}" BorderBrush="{DynamicResource Theme.InputPopup}" BorderThickness="0,0,0,1" Padding="20,12">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
@@ -1272,47 +1393,47 @@ $xaml = @'
                         <RowDefinition/>
                     </Grid.RowDefinitions>
                     <StackPanel Grid.Column="0" Grid.Row="0" Margin="0,0,16,4">
-                        <TextBlock Text="COMPUTER" FontSize="9" Foreground="#555570" FontWeight="Bold"/>
-                        <TextBlock x:Name="infoComputer" Text="..." FontSize="11.5" Foreground="#e8e8f0"/>
+                        <TextBlock Text="COMPUTER" FontSize="9" Foreground="{DynamicResource Theme.TextFaint}" FontWeight="Bold"/>
+                        <TextBlock x:Name="infoComputer" Text="..." FontSize="11.5" Foreground="{DynamicResource Theme.TextBright}"/>
                     </StackPanel>
                     <StackPanel Grid.Column="1" Grid.Row="0" Margin="0,0,16,4">
-                        <TextBlock Text="OS / BUILD" FontSize="9" Foreground="#555570" FontWeight="Bold"/>
-                        <TextBlock x:Name="infoOS" Text="..." FontSize="11.5" Foreground="#e8e8f0"/>
+                        <TextBlock Text="OS / BUILD" FontSize="9" Foreground="{DynamicResource Theme.TextFaint}" FontWeight="Bold"/>
+                        <TextBlock x:Name="infoOS" Text="..." FontSize="11.5" Foreground="{DynamicResource Theme.TextBright}"/>
                     </StackPanel>
                     <StackPanel Grid.Column="2" Grid.Row="0" Margin="0,0,16,4">
-                        <TextBlock Text="CPU" FontSize="9" Foreground="#555570" FontWeight="Bold"/>
-                        <TextBlock x:Name="infoCPU" Text="..." FontSize="11.5" Foreground="#e8e8f0" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Text="CPU" FontSize="9" Foreground="{DynamicResource Theme.TextFaint}" FontWeight="Bold"/>
+                        <TextBlock x:Name="infoCPU" Text="..." FontSize="11.5" Foreground="{DynamicResource Theme.TextBright}" TextTrimming="CharacterEllipsis"/>
                     </StackPanel>
                     <StackPanel Grid.Column="3" Grid.Row="0" Margin="0,0,0,4">
-                        <TextBlock Text="RAM" FontSize="9" Foreground="#555570" FontWeight="Bold"/>
-                        <TextBlock x:Name="infoRAM" Text="..." FontSize="11.5" Foreground="#e8e8f0"/>
+                        <TextBlock Text="RAM" FontSize="9" Foreground="{DynamicResource Theme.TextFaint}" FontWeight="Bold"/>
+                        <TextBlock x:Name="infoRAM" Text="..." FontSize="11.5" Foreground="{DynamicResource Theme.TextBright}"/>
                     </StackPanel>
                     <StackPanel Grid.Column="0" Grid.Row="1" Margin="0,4,16,0">
-                        <TextBlock Text="USER" FontSize="9" Foreground="#555570" FontWeight="Bold"/>
-                        <TextBlock x:Name="infoUser" Text="..." FontSize="11.5" Foreground="#e8e8f0"/>
+                        <TextBlock Text="USER" FontSize="9" Foreground="{DynamicResource Theme.TextFaint}" FontWeight="Bold"/>
+                        <TextBlock x:Name="infoUser" Text="..." FontSize="11.5" Foreground="{DynamicResource Theme.TextBright}"/>
                     </StackPanel>
                     <StackPanel Grid.Column="1" Grid.Row="1" Margin="0,4,16,0">
-                        <TextBlock Text="DOMAIN / WORKGROUP" FontSize="9" Foreground="#555570" FontWeight="Bold"/>
-                        <TextBlock x:Name="infoDomain" Text="..." FontSize="11.5" Foreground="#e8e8f0"/>
+                        <TextBlock Text="DOMAIN / WORKGROUP" FontSize="9" Foreground="{DynamicResource Theme.TextFaint}" FontWeight="Bold"/>
+                        <TextBlock x:Name="infoDomain" Text="..." FontSize="11.5" Foreground="{DynamicResource Theme.TextBright}"/>
                     </StackPanel>
                     <StackPanel Grid.Column="2" Grid.Row="1" Margin="0,4,16,0" Grid.ColumnSpan="2">
-                        <TextBlock Text="STORAGE" FontSize="9" Foreground="#555570" FontWeight="Bold"/>
-                        <TextBlock x:Name="infoStorage" Text="..." FontSize="11.5" Foreground="#e8e8f0"/>
+                        <TextBlock Text="STORAGE" FontSize="9" Foreground="{DynamicResource Theme.TextFaint}" FontWeight="Bold"/>
+                        <TextBlock x:Name="infoStorage" Text="..." FontSize="11.5" Foreground="{DynamicResource Theme.TextBright}"/>
                     </StackPanel>
                 </Grid>
             </Border>
 
             <!-- Bottom Log Panel -->
-            <Border DockPanel.Dock="Bottom" Background="#08080e" BorderBrush="#1a1a2e" BorderThickness="0,1,0,0" MaxHeight="160">
+            <Border DockPanel.Dock="Bottom" Background="{DynamicResource Theme.ShellDeep}" BorderBrush="{DynamicResource Theme.InputPopup}" BorderThickness="0,1,0,0" MaxHeight="160">
                 <DockPanel>
-                    <Border DockPanel.Dock="Top" Padding="12,6" Background="#0c0c16">
+                    <Border DockPanel.Dock="Top" Padding="12,6" Background="{DynamicResource Theme.LogHeader}">
                         <DockPanel>
-                            <TextBlock Text="OUTPUT LOG" FontSize="10" Foreground="#555570" FontWeight="Bold" VerticalAlignment="Center"/>
+                            <TextBlock Text="OUTPUT LOG" FontSize="10" Foreground="{DynamicResource Theme.TextFaint}" FontWeight="Bold" VerticalAlignment="Center"/>
                             <Button x:Name="btnClearLog" Content="Clear" Style="{StaticResource SecondaryBtn}" Padding="10,3" FontSize="10" HorizontalAlignment="Right" DockPanel.Dock="Right"/>
                         </DockPanel>
                     </Border>
                     <TextBox x:Name="txtLog" IsReadOnly="True" Background="Transparent"
-                             Foreground="#4ade80" FontFamily="Cascadia Mono,Consolas" FontSize="11"
+                             Foreground="{DynamicResource Theme.Log}" FontFamily="Cascadia Mono,Consolas" FontSize="11"
                              TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
                              BorderThickness="0" Padding="12,6" AcceptsReturn="True"/>
                 </DockPanel>
@@ -1325,11 +1446,11 @@ $xaml = @'
                 <Grid x:Name="pageInstall" Visibility="Visible">
                     <DockPanel>
                         <!-- Top Bar -->
-                        <Border DockPanel.Dock="Top" Padding="24,18,24,14" Background="#0d0d16">
+                        <Border DockPanel.Dock="Top" Padding="24,18,24,14" Background="{DynamicResource Theme.Surface}">
                             <DockPanel>
                                 <StackPanel>
-                                    <TextBlock Text="Install Programs" FontSize="22" FontWeight="Bold" Foreground="#e8e8f0"/>
-                                    <TextBlock Text="Select applications and install them with one click via winget" FontSize="12" Foreground="#666680" Margin="0,4,0,0"/>
+                                    <TextBlock Text="Install Programs" FontSize="22" FontWeight="Bold" Foreground="{DynamicResource Theme.TextBright}"/>
+                                    <TextBlock Text="Select applications and install them with one click via winget" FontSize="12" Foreground="{DynamicResource Theme.TextSubtle}" Margin="0,4,0,0"/>
                                 </StackPanel>
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" DockPanel.Dock="Right" VerticalAlignment="Center">
                                     <TextBox x:Name="txtSearch" Width="220" Height="32" Tag="Search applications..."
@@ -1341,26 +1462,26 @@ $xaml = @'
                             </DockPanel>
                         </Border>
                         <!-- Preset Buttons -->
-                        <Border DockPanel.Dock="Top" Padding="24,8,24,8" Background="#0b0b14">
+                        <Border DockPanel.Dock="Top" Padding="24,8,24,8" Background="{DynamicResource Theme.Toolbar}">
                             <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="PRESETS:" FontSize="10" Foreground="#555570" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                <TextBlock Text="PRESETS:" FontSize="10" Foreground="{DynamicResource Theme.TextFaint}" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,10,0"/>
                                 <Button x:Name="btnPresetDev" Content="Developer" Style="{StaticResource SecondaryBtn}" Padding="12,5" FontSize="11" Margin="0,0,6,0"/>
                                 <Button x:Name="btnPresetGamer" Content="Gamer" Style="{StaticResource SecondaryBtn}" Padding="12,5" FontSize="11" Margin="0,0,6,0"/>
                                 <Button x:Name="btnPresetProd" Content="Productivity" Style="{StaticResource SecondaryBtn}" Padding="12,5" FontSize="11" Margin="0,0,6,0"/>
                                 <Button x:Name="btnPresetBasic" Content="Essentials" Style="{StaticResource SecondaryBtn}" Padding="12,5" FontSize="11" Margin="0,0,6,0"/>
-                                <Border Width="1" Background="#333346" Margin="8,2"/>
+                                <Border Width="1" Background="{DynamicResource Theme.Border}" Margin="8,2"/>
                                 <Button x:Name="btnUpgradeAll" Content="  Upgrade All" Style="{StaticResource SuccessBtn}" Padding="12,5" FontSize="11" Margin="6,0,0,0"/>
                                 <Button x:Name="btnUninstallSelected" Content="  Uninstall Selected" Style="{StaticResource DangerBtn}" Padding="12,5" FontSize="11" Margin="6,0,0,0"/>
                                 <Button x:Name="btnGetInstalled" Content="  Get Installed" Style="{StaticResource SecondaryBtn}" Padding="12,5" FontSize="11" Margin="6,0,0,0"/>
-                                <Border Width="1" Background="#333346" Margin="10,2"/>
-                                <TextBlock Text="LANES:" FontSize="10" Foreground="#555570" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <Border Width="1" Background="{DynamicResource Theme.Border}" Margin="10,2"/>
+                                <TextBlock Text="LANES:" FontSize="10" Foreground="{DynamicResource Theme.TextFaint}" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0"/>
                                 <ComboBox x:Name="cmbInstallConcurrency" Width="58" Height="28" VerticalAlignment="Center" ToolTip="Number of concurrent package installs">
                                     <ComboBoxItem Content="1" IsSelected="True"/>
                                     <ComboBoxItem Content="2"/>
                                     <ComboBoxItem Content="3"/>
                                     <ComboBoxItem Content="4"/>
                                 </ComboBox>
-                                <TextBlock Text="CUSTOM:" FontSize="10" Foreground="#555570" FontWeight="Bold" VerticalAlignment="Center" Margin="12,0,6,0"/>
+                                <TextBlock Text="CUSTOM:" FontSize="10" Foreground="{DynamicResource Theme.TextFaint}" FontWeight="Bold" VerticalAlignment="Center" Margin="12,0,6,0"/>
                                 <TextBox x:Name="txtCustomArgs" Width="330" Height="28" VerticalContentAlignment="Center"
                                          ToolTip="Per-package arguments: package.id=--location &quot;D:\Apps&quot;; another.id=--scope user"
                                          Tag="package.id=--custom-args"/>
@@ -1376,12 +1497,12 @@ $xaml = @'
                 <!-- TWEAKS PAGE -->
                 <Grid x:Name="pageTweaks" Visibility="Collapsed">
                     <DockPanel>
-                        <Border DockPanel.Dock="Top" Padding="24,18,24,14" Background="#0d0d16">
+                        <Border DockPanel.Dock="Top" Padding="24,18,24,14" Background="{DynamicResource Theme.Surface}">
                             <DockPanel>
                                 <StackPanel>
-                                    <TextBlock Text="System Tweaks" FontSize="22" FontWeight="Bold" Foreground="#e8e8f0"/>
-                                    <TextBlock Text="Optimize Windows for performance, privacy, and usability" FontSize="12" Foreground="#666680" Margin="0,4,0,0"/>
-                                    <TextBlock x:Name="txtEnterpriseBanner" Text="" Visibility="Collapsed" FontSize="11" Foreground="#facc15" TextWrapping="Wrap" Margin="0,6,0,0"/>
+                                    <TextBlock Text="System Tweaks" FontSize="22" FontWeight="Bold" Foreground="{DynamicResource Theme.TextBright}"/>
+                                    <TextBlock Text="Optimize Windows for performance, privacy, and usability" FontSize="12" Foreground="{DynamicResource Theme.TextSubtle}" Margin="0,4,0,0"/>
+                                    <TextBlock x:Name="txtEnterpriseBanner" Text="" Visibility="Collapsed" FontSize="11" Foreground="{DynamicResource Theme.Warning}" TextWrapping="Wrap" Margin="0,6,0,0"/>
                                 </StackPanel>
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" DockPanel.Dock="Right" VerticalAlignment="Center">
                                     <Button x:Name="btnTweakPresetEssential" Content="Essential Preset" Style="{StaticResource SecondaryBtn}" Margin="0,0,6,0"/>
@@ -1405,10 +1526,10 @@ $xaml = @'
                 <!-- CONFIG PAGE -->
                 <Grid x:Name="pageConfig" Visibility="Collapsed">
                     <DockPanel>
-                        <Border DockPanel.Dock="Top" Padding="24,18,24,14" Background="#0d0d16">
+                        <Border DockPanel.Dock="Top" Padding="24,18,24,14" Background="{DynamicResource Theme.Surface}">
                             <StackPanel>
-                                <TextBlock Text="System Configuration" FontSize="22" FontWeight="Bold" Foreground="#e8e8f0"/>
-                                <TextBlock Text="Windows features, system fixes, and legacy control panels" FontSize="12" Foreground="#666680" Margin="0,4,0,0"/>
+                                <TextBlock Text="System Configuration" FontSize="22" FontWeight="Bold" Foreground="{DynamicResource Theme.TextBright}"/>
+                                <TextBlock Text="Windows features, system fixes, and legacy control panels" FontSize="12" Foreground="{DynamicResource Theme.TextSubtle}" Margin="0,4,0,0"/>
                             </StackPanel>
                         </Border>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24,14">
@@ -1420,28 +1541,28 @@ $xaml = @'
                 <!-- DEPLOYMENT PAGE -->
                 <Grid x:Name="pageDeploy" Visibility="Collapsed">
                     <DockPanel>
-                        <Border DockPanel.Dock="Top" Padding="24,18,24,14" Background="#0d0d16">
+                        <Border DockPanel.Dock="Top" Padding="24,18,24,14" Background="{DynamicResource Theme.Surface}">
                             <StackPanel>
-                                <TextBlock Text="Deployment" FontSize="22" FontWeight="Bold" Foreground="#e8e8f0"/>
-                                <TextBlock Text="Export repeatable setup blocks, reach remote machines, and load fleet presets" FontSize="12" Foreground="#666680" Margin="0,4,0,0"/>
+                                <TextBlock Text="Deployment" FontSize="22" FontWeight="Bold" Foreground="{DynamicResource Theme.TextBright}"/>
+                                <TextBlock Text="Export repeatable setup blocks, reach remote machines, and load fleet presets" FontSize="12" Foreground="{DynamicResource Theme.TextSubtle}" Margin="0,4,0,0"/>
                             </StackPanel>
                         </Border>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24,14">
                             <StackPanel MaxWidth="760" HorizontalAlignment="Left">
-                                <Border Background="#12121e" CornerRadius="8" Padding="20" Margin="0,0,0,14" BorderBrush="#1e1e36" BorderThickness="1">
+                        <Border Background="{DynamicResource Theme.Card}" CornerRadius="8" Padding="20" Margin="0,0,0,14" BorderBrush="{DynamicResource Theme.Divider}" BorderThickness="1">
                                     <StackPanel>
-                                        <TextBlock Text="MDT / Autounattend" FontSize="16" FontWeight="Bold" Foreground="#e8e8f0" Margin="0,0,0,8"/>
-                                        <TextBlock Text="Export a FirstLogonCommands XML block and a companion script for the current selections." FontSize="12" Foreground="#666680" TextWrapping="Wrap" Margin="0,0,0,14"/>
+                                        <TextBlock Text="MDT / Autounattend" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource Theme.TextBright}" Margin="0,0,0,8"/>
+                                        <TextBlock Text="Export a FirstLogonCommands XML block and a companion script for the current selections." FontSize="12" Foreground="{DynamicResource Theme.TextSubtle}" TextWrapping="Wrap" Margin="0,0,0,14"/>
                                         <WrapPanel>
                                             <Button x:Name="btnExportMDT" Content="Export FirstLogonCommands" Style="{StaticResource AccentBtn}" Margin="0,0,8,8"/>
                                             <Button x:Name="btnHealthCheck" Content="Post-install Health Check" Style="{StaticResource SecondaryBtn}" Margin="0,0,8,8"/>
                                         </WrapPanel>
                                     </StackPanel>
                                 </Border>
-                                <Border Background="#12121e" CornerRadius="8" Padding="20" Margin="0,0,0,14" BorderBrush="#1e1e36" BorderThickness="1">
+                        <Border Background="{DynamicResource Theme.Card}" CornerRadius="8" Padding="20" Margin="0,0,0,14" BorderBrush="{DynamicResource Theme.Divider}" BorderThickness="1">
                                     <StackPanel>
-                                        <TextBlock Text="Remote PowerShell" FontSize="16" FontWeight="Bold" Foreground="#e8e8f0" Margin="0,0,0,8"/>
-                                        <TextBlock Text="Uses the current Windows credentials and an existing WinRM/PSRemoting configuration." FontSize="12" Foreground="#666680" TextWrapping="Wrap" Margin="0,0,0,14"/>
+                                        <TextBlock Text="Remote PowerShell" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource Theme.TextBright}" Margin="0,0,0,8"/>
+                                        <TextBlock Text="Uses the current Windows credentials and an existing WinRM/PSRemoting configuration." FontSize="12" Foreground="{DynamicResource Theme.TextSubtle}" TextWrapping="Wrap" Margin="0,0,0,14"/>
                                         <StackPanel Orientation="Horizontal">
                                             <TextBox x:Name="txtRemoteComputer" Width="250" Height="32" VerticalContentAlignment="Center" Tag="Computer name or FQDN" ToolTip="Remote computer name or FQDN" Margin="0,0,8,0"/>
                                             <Button x:Name="btnRemoteAudit" Content="Audit Remote" Style="{StaticResource SecondaryBtn}" Margin="0,0,8,0"/>
@@ -1449,10 +1570,10 @@ $xaml = @'
                                         </StackPanel>
                                     </StackPanel>
                                 </Border>
-                                <Border Background="#12121e" CornerRadius="8" Padding="20" Margin="0,0,0,14" BorderBrush="#1e1e36" BorderThickness="1">
+                        <Border Background="{DynamicResource Theme.Card}" CornerRadius="8" Padding="20" Margin="0,0,0,14" BorderBrush="{DynamicResource Theme.Divider}" BorderThickness="1">
                                     <StackPanel>
-                                        <TextBlock Text="Fleet Preset Library" FontSize="16" FontWeight="Bold" Foreground="#e8e8f0" Margin="0,0,0,8"/>
-                                        <TextBlock Text="Load a JSON profile from a local path, SMB share, or HTTPS Git URL. Set WINFORGE_PRESET_SOURCE to load it automatically at startup." FontSize="12" Foreground="#666680" TextWrapping="Wrap" Margin="0,0,0,14"/>
+                                        <TextBlock Text="Fleet Preset Library" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource Theme.TextBright}" Margin="0,0,0,8"/>
+                                        <TextBlock Text="Load a JSON profile from a local path, SMB share, or HTTPS Git URL. Set WINFORGE_PRESET_SOURCE to load it automatically at startup." FontSize="12" Foreground="{DynamicResource Theme.TextSubtle}" TextWrapping="Wrap" Margin="0,0,0,14"/>
                                         <StackPanel Orientation="Horizontal">
                                             <TextBox x:Name="txtFleetPresetSource" Width="500" Height="32" VerticalContentAlignment="Center" ToolTip="C:\\Profiles\\WinForge.json, \\server\\share\\profile.json, or https://..." Margin="0,0,8,0"/>
                                             <Button x:Name="btnLoadFleetPreset" Content="Load Preset" Style="{StaticResource SecondaryBtn}"/>
@@ -1467,19 +1588,19 @@ $xaml = @'
                 <!-- UPDATES PAGE -->
                 <Grid x:Name="pageUpdates" Visibility="Collapsed">
                     <DockPanel>
-                        <Border DockPanel.Dock="Top" Padding="24,18,24,14" Background="#0d0d16">
+                        <Border DockPanel.Dock="Top" Padding="24,18,24,14" Background="{DynamicResource Theme.Surface}">
                             <StackPanel>
-                                <TextBlock Text="Windows Updates" FontSize="22" FontWeight="Bold" Foreground="#e8e8f0"/>
-                                <TextBlock Text="Control how and when Windows installs updates" FontSize="12" Foreground="#666680" Margin="0,4,0,0"/>
+                                <TextBlock Text="Windows Updates" FontSize="22" FontWeight="Bold" Foreground="{DynamicResource Theme.TextBright}"/>
+                                <TextBlock Text="Control how and when Windows installs updates" FontSize="12" Foreground="{DynamicResource Theme.TextSubtle}" Margin="0,4,0,0"/>
                             </StackPanel>
                         </Border>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24,14">
                             <StackPanel x:Name="pnlUpdates" MaxWidth="700" HorizontalAlignment="Left">
                                 <!-- DNS Section -->
-                                <Border Background="#12121e" CornerRadius="8" Padding="20" Margin="0,0,0,14" BorderBrush="#1e1e36" BorderThickness="1">
+                        <Border Background="{DynamicResource Theme.Card}" CornerRadius="8" Padding="20" Margin="0,0,0,14" BorderBrush="{DynamicResource Theme.Divider}" BorderThickness="1">
                                     <StackPanel>
-                                        <TextBlock Text="DNS Configuration" FontSize="16" FontWeight="Bold" Foreground="#e8e8f0" Margin="0,0,0,10"/>
-                                        <TextBlock Text="Select a DNS provider to optimize speed and privacy" FontSize="12" Foreground="#666680" Margin="0,0,0,14"/>
+                                        <TextBlock Text="DNS Configuration" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource Theme.TextBright}" Margin="0,0,0,10"/>
+                                        <TextBlock Text="Select a DNS provider to optimize speed and privacy" FontSize="12" Foreground="{DynamicResource Theme.TextSubtle}" Margin="0,0,0,14"/>
                                         <StackPanel Orientation="Horizontal">
                                             <ComboBox x:Name="cmbDNS" Width="250" Margin="0,0,10,0">
                                                 <ComboBoxItem Content="Default (DHCP)" IsSelected="True"/>
@@ -1494,10 +1615,10 @@ $xaml = @'
                                     </StackPanel>
                                 </Border>
                                 <!-- Update Policies -->
-                                <Border Background="#12121e" CornerRadius="8" Padding="20" Margin="0,0,0,14" BorderBrush="#1e1e36" BorderThickness="1">
+                        <Border Background="{DynamicResource Theme.Card}" CornerRadius="8" Padding="20" Margin="0,0,0,14" BorderBrush="{DynamicResource Theme.Divider}" BorderThickness="1">
                                     <StackPanel>
-                                        <TextBlock Text="Windows Update Policy" FontSize="16" FontWeight="Bold" Foreground="#e8e8f0" Margin="0,0,0,10"/>
-                                        <TextBlock Text="Choose how Windows handles updates on this system" FontSize="12" Foreground="#666680" Margin="0,0,0,14"/>
+                                        <TextBlock Text="Windows Update Policy" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource Theme.TextBright}" Margin="0,0,0,10"/>
+                                        <TextBlock Text="Choose how Windows handles updates on this system" FontSize="12" Foreground="{DynamicResource Theme.TextSubtle}" Margin="0,0,0,14"/>
                                         <WrapPanel>
                                             <Button x:Name="btnUpdateDefault" Content="  Default (Recommended)" Style="{StaticResource SuccessBtn}" Margin="0,0,8,8" Padding="14,10"/>
                                             <Button x:Name="btnUpdateSecurity" Content="  Security Only" Style="{StaticResource AccentBtn}" Margin="0,0,8,8" Padding="14,10"/>
@@ -1506,9 +1627,9 @@ $xaml = @'
                                     </StackPanel>
                                 </Border>
                                 <!-- Update Actions -->
-                                <Border Background="#12121e" CornerRadius="8" Padding="20" Margin="0,0,0,14" BorderBrush="#1e1e36" BorderThickness="1">
+                        <Border Background="{DynamicResource Theme.Card}" CornerRadius="8" Padding="20" Margin="0,0,0,14" BorderBrush="{DynamicResource Theme.Divider}" BorderThickness="1">
                                     <StackPanel>
-                                        <TextBlock Text="Update Actions" FontSize="16" FontWeight="Bold" Foreground="#e8e8f0" Margin="0,0,0,10"/>
+                                        <TextBlock Text="Update Actions" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource Theme.TextBright}" Margin="0,0,0,10"/>
                                         <WrapPanel>
                                             <Button x:Name="btnCheckUpdates" Content="Check for Updates" Style="{StaticResource SecondaryBtn}" Margin="0,0,8,8"/>
                                             <Button x:Name="btnPauseUpdates" Content="Pause Updates (35 days)" Style="{StaticResource SecondaryBtn}" Margin="0,0,8,8"/>
@@ -1527,7 +1648,54 @@ $xaml = @'
 '@
 
 # ── Parse XAML & Build Window ──────────────────────────────────────────────────
-$window = [System.Windows.Markup.XamlReader]::Parse($xaml)
+try { $window = [System.Windows.Markup.XamlReader]::Parse($xaml) }
+catch {
+    [void](Write-WinForgeCrashLog -Exception $_.Exception -Context 'XAML window construction')
+    throw
+}
+
+$script:WinForgeThemePalettes = @{
+    Dark = [ordered]@{
+        Window = '#0d0d12'; Shell = '#0a0a14'; ShellDeep = '#08080e'; Surface = '#0d0d16'; Card = '#12121e'; Toolbar = '#0b0b14'; LogHeader = '#0c0c16'
+        Input = '#1e1e2e'; InputPopup = '#1a1a2e'; Border = '#333346'; Divider = '#1e1e36'; Hover = '#282840'; PanelPressed = '#282844'; NavHover = '#18182a'; Panel = '#16162a'; PanelBorder = '#2a2a42'
+        Text = '#d4d4e8'; TextBright = '#e8e8f0'; TextMuted = '#8888a0'; TextSubtle = '#666680'; TextFaint = '#555570'; Label = '#444460'; Arrow = '#9999aa'
+        Accent = '#6c5ce7'; AccentHover = '#7c6ff0'; AccentPressed = '#5a4bd4'; AccentText = '#a78bfa'; White = '#ffffff'; Danger = '#dc2626'; DangerHover = '#ef4444'; DangerPressed = '#b91c1c'
+        SuccessButton = '#16a34a'; SuccessButtonHover = '#22c55e'; SuccessButtonPressed = '#15803d'; Log = '#4ade80'; Warning = '#facc15'; RiskRed = '#f87171'
+    }
+    Light = [ordered]@{
+        Window = '#f3f4f6'; Shell = '#ffffff'; ShellDeep = '#e5e7eb'; Surface = '#f9fafb'; Card = '#ffffff'; Toolbar = '#eef2f7'; LogHeader = '#e5e7eb'
+        Input = '#ffffff'; InputPopup = '#ffffff'; Border = '#cbd5e1'; Divider = '#dbe3ec'; Hover = '#e5e7eb'; PanelPressed = '#dbe4ee'; NavHover = '#eef2f7'; Panel = '#f8fafc'; PanelBorder = '#cbd5e1'
+        Text = '#1f2937'; TextBright = '#111827'; TextMuted = '#4b5563'; TextSubtle = '#64748b'; TextFaint = '#6b7280'; Label = '#475569'; Arrow = '#475569'
+        Accent = '#5b4bc4'; AccentHover = '#4c3db5'; AccentPressed = '#3d319d'; AccentText = '#4c3db5'; White = '#ffffff'; Danger = '#b91c1c'; DangerHover = '#dc2626'; DangerPressed = '#991b1b'
+        SuccessButton = '#15803d'; SuccessButtonHover = '#16a34a'; SuccessButtonPressed = '#166534'; Log = '#166534'; Warning = '#a16207'; RiskRed = '#b91c1c'
+    }
+    'High Contrast' = [ordered]@{
+        Window = '#000000'; Shell = '#000000'; ShellDeep = '#000000'; Surface = '#000000'; Card = '#000000'; Toolbar = '#000000'; LogHeader = '#000000'
+        Input = '#000000'; InputPopup = '#000000'; Border = '#ffffff'; Divider = '#ffffff'; Hover = '#1f1f1f'; PanelPressed = '#333333'; NavHover = '#1f1f1f'; Panel = '#000000'; PanelBorder = '#ffffff'
+        Text = '#ffffff'; TextBright = '#ffffff'; TextMuted = '#ffffff'; TextSubtle = '#ffff00'; TextFaint = '#ffff00'; Label = '#00ffff'; Arrow = '#ffffff'
+        Accent = '#00ffff'; AccentHover = '#ffffff'; AccentPressed = '#00aaaa'; AccentText = '#00ffff'; White = '#000000'; Danger = '#ff0000'; DangerHover = '#ff6666'; DangerPressed = '#990000'
+        SuccessButton = '#00aa00'; SuccessButtonHover = '#00ff00'; SuccessButtonPressed = '#006600'; Log = '#00ff00'; Warning = '#ffff00'; RiskRed = '#ff6666'
+    }
+}
+
+function Set-WinForgeTheme {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
+    param([Parameter(Mandatory)][ValidateSet('Dark','Light','High Contrast')][string]$Theme)
+
+    if (-not $PSCmdlet.ShouldProcess($Theme, 'apply appearance theme')) { return $false }
+    $palette = $script:WinForgeThemePalettes[$Theme]
+    if (-not $palette) { return $false }
+    foreach ($entry in $palette.GetEnumerator()) {
+        $resourceKey = 'Theme.{0}' -f $entry.Key
+        $brush = New-Object System.Windows.Media.SolidColorBrush
+        $brush.Color = [System.Windows.Media.ColorConverter]::ConvertFromString($entry.Value)
+        $brush.Freeze()
+        if ($window.Resources.Contains($resourceKey)) { [void]$window.Resources.Remove($resourceKey) }
+        [void]$window.Resources.Add($resourceKey, $brush)
+    }
+    $script:WinForgeTheme = $Theme
+    return $true
+}
 
 # codex-branding:start
                 try {
@@ -1585,6 +1753,8 @@ $navExport  = $window.FindName('navExport')
 $navImport  = $window.FindName('navImport')
 $navExportWinget = $window.FindName('navExportWinget')
 $navImportWinget = $window.FindName('navImportWinget')
+$btnCopyCrashReport = $window.FindName('btnCopyCrashReport')
+$cmbTheme = $window.FindName('cmbTheme')
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 function Write-Log {
@@ -1595,6 +1765,42 @@ function Write-Log {
         $txtLog.ScrollToEnd()
     })
 }
+
+function Register-WinForgeCrashHandler {
+    [CmdletBinding()]
+    param()
+
+    if ($script:CrashHandlersRegistered) { return }
+    $window.Dispatcher.Add_UnhandledException({
+        param($eventSender, $eventData)
+        try {
+            [void]$eventSender
+            [void](Write-WinForgeCrashLog -Exception $eventData.Exception -Context 'WPF dispatcher')
+            if ($btnCopyCrashReport) { $btnCopyCrashReport.IsEnabled = $true }
+            Write-Log 'A crash was recorded locally. Review it before sharing.'
+        } catch {
+            Write-Debug ("WinForge dispatcher crash handler failed: {0}" -f $_.Exception.Message)
+        } finally {
+            $eventData.Handled = $true
+        }
+    }.GetNewClosure())
+    [AppDomain]::CurrentDomain.Add_UnhandledException({
+        param($eventSender, $eventData)
+        try {
+            [void]$eventSender
+            $exception = $eventData.ExceptionObject -as [System.Exception]
+            if (-not $exception) { $exception = New-Object System.Exception([string]$eventData.ExceptionObject) }
+            [void](Write-WinForgeCrashLog -Exception $exception -Context 'AppDomain unhandled exception')
+        } catch {
+            Write-Debug ("WinForge AppDomain crash handler failed: {0}" -f $_.Exception.Message)
+        }
+    }.GetNewClosure())
+    $script:CrashHandlersRegistered = $true
+}
+
+Register-WinForgeCrashHandler
+$btnCopyCrashReport.IsEnabled = Test-Path -LiteralPath (Get-WinForgeCrashLogPath)
+$btnCopyCrashReport.Add_Click({ Copy-WinForgeCrashReport })
 
 # ── Navigation ─────────────────────────────────────────────────────────────────
 $script:AllPages = @($pageInstall, $pageTweaks, $pageConfig, $pageDeploy, $pageUpdates)
@@ -1615,6 +1821,13 @@ $navTweaks.Add_Click({  Switch-Page $pageTweaks  $navTweaks })
 $navConfig.Add_Click({  Switch-Page $pageConfig   $navConfig })
 $navDeploy.Add_Click({  Switch-Page $pageDeploy   $navDeploy })
 $navUpdates.Add_Click({ Switch-Page $pageUpdates $navUpdates })
+$cmbTheme.Add_SelectionChanged({
+    $selectedTheme = $cmbTheme.SelectedItem
+    if ($selectedTheme) {
+        $themeName = [string]$selectedTheme.Content
+        if (Set-WinForgeTheme -Theme $themeName) { Write-Log ("[OK] Appearance changed to {0}." -f $themeName) }
+    }
+})
 
 $btnClearLog.Add_Click({ $txtLog.Text = '' })
 
@@ -1668,9 +1881,9 @@ function Build-InstallTab {
     foreach ($category in $script:AppCategories.Keys) {
         # Category card
         $card = New-Object System.Windows.Controls.Border
-        $card.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#12121e')
+        $card.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, 'Theme.Card')
         $card.CornerRadius = [System.Windows.CornerRadius]::new(8)
-        $card.BorderBrush = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#1e1e36')
+        $card.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'Theme.Divider')
         $card.BorderThickness = [System.Windows.Thickness]::new(1)
         $card.Padding = [System.Windows.Thickness]::new(14)
         $card.Margin = [System.Windows.Thickness]::new(0,0,12,12)
@@ -1683,13 +1896,13 @@ function Build-InstallTab {
         $header.Text = $category.ToUpper()
         $header.FontSize = 10
         $header.FontWeight = 'Bold'
-        $header.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#6c5ce7')
+        $header.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'Theme.Accent')
         $header.Margin = [System.Windows.Thickness]::new(0,0,0,8)
         $stack.Children.Add($header)
 
         $sep = New-Object System.Windows.Controls.Border
         $sep.Height = 1
-        $sep.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#1e1e36')
+        $sep.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, 'Theme.Divider')
         $sep.Margin = [System.Windows.Thickness]::new(0,0,0,8)
         $stack.Children.Add($sep)
 
@@ -1697,7 +1910,7 @@ function Build-InstallTab {
             $cb = New-Object System.Windows.Controls.CheckBox
             $cb.Content = $app.Name
             $cb.Tag = $app.Id
-            $cb.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#c4c4d8')
+            $cb.SetResourceReference([System.Windows.Controls.Control]::ForegroundProperty, 'Theme.Text')
             $cb.Margin = [System.Windows.Thickness]::new(0,2,0,2)
             $cb.FontSize = 12
             $stack.Children.Add($cb)
@@ -1991,7 +2204,7 @@ function Build-TweaksTab {
         $header.Text = $category.ToUpper()
         $header.FontSize = 11
         $header.FontWeight = 'Bold'
-        $header.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#6c5ce7')
+        $header.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'Theme.Accent')
         $header.Margin = [System.Windows.Thickness]::new(0,10,0,8)
         $pnlTweaks.Children.Add($header)
 
@@ -2000,9 +2213,9 @@ function Build-TweaksTab {
 
         foreach ($tweak in $script:TweakCategories[$category]) {
             $card = New-Object System.Windows.Controls.Border
-            $card.Background = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#12121e')
+            $card.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, 'Theme.Card')
             $card.CornerRadius = [System.Windows.CornerRadius]::new(6)
-            $card.BorderBrush = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#1e1e36')
+            $card.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, 'Theme.Divider')
             $card.BorderThickness = [System.Windows.Thickness]::new(1)
             $card.Padding = [System.Windows.Thickness]::new(12,8,12,8)
             $card.Margin = [System.Windows.Thickness]::new(0,0,10,8)
@@ -2012,7 +2225,7 @@ function Build-TweaksTab {
             $cb = New-Object System.Windows.Controls.CheckBox
             $cb.Content = $tweak.Name
             $cb.Tag = $tweak.Key
-            $cb.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#d4d4e8')
+            $cb.SetResourceReference([System.Windows.Controls.Control]::ForegroundProperty, 'Theme.Text')
             $cb.FontSize = 12.5
             $meta = Get-WinForgeTweakInfo -Key $tweak.Key
             $cb.ToolTip = "{0}`nRisk: {1}`nRevert: {2}" -f $tweak.Desc, $meta.Risk, $meta.Revert
@@ -2031,7 +2244,7 @@ function Build-TweaksTab {
             $desc = New-Object System.Windows.Controls.TextBlock
             $desc.Text = $tweak.Desc
             $desc.FontSize = 10.5
-            $desc.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#666680')
+            $desc.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'Theme.TextSubtle')
             $desc.TextWrapping = 'Wrap'
             $desc.Margin = [System.Windows.Thickness]::new(18,2,0,0)
             $sp.Children.Add($desc)
@@ -2667,7 +2880,7 @@ function Build-ConfigTab {
         $header.Text = $section.ToUpper()
         $header.FontSize = 11
         $header.FontWeight = 'Bold'
-        $header.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#6c5ce7')
+        $header.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'Theme.Accent')
         $header.Margin = [System.Windows.Thickness]::new(0,10,0,8)
         $pnlConfig.Children.Add($header)
 
@@ -2956,5 +3169,9 @@ if ($RunTweaks.Count -gt 0) {
 Write-Log "WinForge v0.1.0 initialized. Ready."
 Write-Log "System: $($txtSysInfo.Text -replace "`n",' | ')"
 if (-not $NoLaunch) {
-    $window.ShowDialog() | Out-Null
+    try { $window.ShowDialog() | Out-Null }
+    catch {
+        [void](Write-WinForgeCrashLog -Exception $_.Exception -Context 'WinForge launch')
+        throw
+    }
 }

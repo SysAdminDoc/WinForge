@@ -93,4 +93,28 @@ Describe 'WinForge core helpers' {
 
         Invoke-WinForgeRemoteMachine -ComputerName 'unused-host' | Should -BeFalse
     }
+
+    It 'switches between dark, light, and high-contrast palettes' {
+        Set-WinForgeTheme -Theme Light | Should -BeTrue
+        ([string]$window.Resources['Theme.Window'].Color) | Should -Be '#FFF3F4F6'
+
+        Set-WinForgeTheme -Theme 'High Contrast' | Should -BeTrue
+        ([string]$window.Resources['Theme.Window'].Color) | Should -Be '#FF000000'
+
+        Set-WinForgeTheme -Theme Dark | Should -BeTrue
+    }
+
+    It 'writes and reads a telemetry-free local crash report' {
+        $path = Join-Path ([IO.Path]::GetTempPath()) ("winforge-crash-{0}.log" -f [guid]::NewGuid())
+        try {
+            $exception = [InvalidOperationException]::new('test failure')
+            Write-WinForgeCrashLog -Exception $exception -Context 'Pester test' -Path $path | Should -Be $path
+
+            $report = Get-WinForgeCrashReport -Path $path
+            $report | Should -Match 'Context: Pester test'
+            $report | Should -Match 'test failure'
+        } finally {
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+        }
+    }
 }

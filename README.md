@@ -34,6 +34,9 @@ Export and import your selections (apps + tweaks) as JSON files, or export/impor
 ### Deployment
 Export a `FirstLogonCommands` XML block with a companion PowerShell payload for MDT or Autounattend workflows. The Deployment page can audit or apply the selected apps and tweaks to a WinRM/PSRemoting target using the current Windows credentials, and can load a JSON fleet preset from a local path, SMB share, or HTTPS Git URL. Set `WINFORGE_PRESET_SOURCE` to load a preset at startup.
 
+### Appearance and Crash Reports
+Switch between Dark, Light, and High Contrast modes from the sidebar. Unhandled UI and application exceptions are recorded locally, without telemetry, at `%LOCALAPPDATA%\WinForge\crash.log`; use **Copy Crash Report** only when you choose to review or share the report.
+
 ## Usage
 
 ```powershell
