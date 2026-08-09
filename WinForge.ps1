@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    WinForge v0.1.0 - Premium Windows System Utility
+    WinForge v0.2.0 - Premium Windows System Utility
 .DESCRIPTION
     All-in-one Windows utility: Install programs, apply system tweaks,
     configure features, and manage Windows Updates.
@@ -19,7 +19,7 @@ param(
     [string[]]$RunTweaks
 )
 
-$script:WinForgeVersion = '0.1.0'
+$script:WinForgeVersion = '0.2.0'
 $script:WinForgeNoLaunch = $NoLaunch
 
 # ── Auto-Elevate ───────────────────────────────────────────────────────────────
@@ -404,18 +404,26 @@ function Get-WinForgeEnterpriseState {
     return [pscustomobject]@{ IsManaged = ($sources.Count -gt 0); Sources = $sources }
 }
 
-function Select-WinForgeTuiItems {
+function Write-WinForgeTui {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Message, [ConsoleColor]$Color = [ConsoleColor]::Gray)
+
+    $null = $Color
+    Write-Information -MessageData $Message -InformationAction Continue
+}
+
+function Select-WinForgeTuiItem {
     [CmdletBinding()]
     param([Parameter(Mandatory)][object[]]$Items, [Parameter(Mandatory)][string]$Title)
 
     if (Get-Command Out-ConsoleGridView -ErrorAction SilentlyContinue) {
         return @($Items | Out-ConsoleGridView -Title $Title -OutputMode Multiple)
     }
-    Write-Host "`n$Title" -ForegroundColor Cyan
+    Write-WinForgeTui -Message "`n$Title" -Color Cyan
     for ($index = 0; $index -lt $Items.Count; $index++) {
         $item = $Items[$index]
         $label = if ($item.Id) { "{0} [{1}]" -f $item.Name, $item.Id } else { "{0} [{1}]" -f $item.Name, $item.Key }
-        Write-Host ("  {0}. {1}" -f ($index + 1), $label)
+        Write-WinForgeTui -Message ("  {0}. {1}" -f ($index + 1), $label)
     }
     $raw = Read-Host 'Enter comma-separated numbers (or press Enter to cancel)'
     if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
@@ -451,8 +459,10 @@ function Invoke-WinForgeTuiTweak {
 }
 
 function Start-WinForgeTui {
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
     param()
+
+    if (-not $PSCmdlet.ShouldProcess('PowerShell 7 TUI', 'start interactive console')) { return }
 
     if (@($RunTweaks).Count -gt 0) {
         foreach ($key in @($RunTweaks)) { Invoke-WinForgeTuiTweak -Key $key }
@@ -469,25 +479,25 @@ function Start-WinForgeTui {
             [pscustomobject]@{ Category = $category; Name = $_.Name; Key = $_.Key }
         }
     })
-    Write-Host 'WinForge PowerShell 7 TUI' -ForegroundColor Magenta
-    Write-Host 'ConsoleGuiTools is used automatically when Out-ConsoleGridView is available.' -ForegroundColor DarkGray
+    Write-WinForgeTui -Message 'WinForge PowerShell 7 TUI' -Color Magenta
+    Write-WinForgeTui -Message 'ConsoleGuiTools is used automatically when Out-ConsoleGridView is available.' -Color DarkGray
     while ($true) {
-        Write-Host "`n1. Install applications`n2. Apply tweaks`n3. Exit" -ForegroundColor Cyan
+        Write-WinForgeTui -Message "`n1. Install applications`n2. Apply tweaks`n3. Exit" -Color Cyan
         switch (Read-Host 'Choose an action') {
             '1' {
-                $selectedApps = @(Select-WinForgeTuiItems -Items $apps -Title 'Select applications')
+                $selectedApps = @(Select-WinForgeTuiItem -Items $apps -Title 'Select applications')
                 if ($selectedApps.Count -eq 0) { continue }
                 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { Write-Warning 'winget is unavailable.'; continue }
                 foreach ($app in $selectedApps) {
-                    Write-Host ("Installing {0} ({1})..." -f $app.Name, $app.Id) -ForegroundColor Yellow
+                    Write-WinForgeTui -Message ("Installing {0} ({1})..." -f $app.Name, $app.Id) -Color Yellow
                     & winget install --id $app.Id --exact --accept-source-agreements --accept-package-agreements
                 }
             }
             '2' {
-                $selectedTweaks = @(Select-WinForgeTuiItems -Items $tweaks -Title 'Select tweaks')
+                $selectedTweaks = @(Select-WinForgeTuiItem -Items $tweaks -Title 'Select tweaks')
                 if ($selectedTweaks.Count -eq 0) { continue }
                 foreach ($tweak in $selectedTweaks) {
-                    try { Invoke-WinForgeTuiTweak -Key $tweak.Key; Write-Host ("Applied: {0}" -f $tweak.Name) -ForegroundColor Green }
+                    try { Invoke-WinForgeTuiTweak -Key $tweak.Key; Write-WinForgeTui -Message ("Applied: {0}" -f $tweak.Name) -Color Green }
                     catch { Write-Warning ("{0}: {1}" -f $tweak.Name, $_.Exception.Message) }
                 }
             }
@@ -1152,7 +1162,7 @@ $script:PackageInstallWorker = {
 $xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="WinForge v0.1.0" Width="1100" Height="740" MinWidth="900" MinHeight="600"
+        Title="WinForge v0.2.0" Width="1100" Height="740" MinWidth="900" MinHeight="600"
         WindowStartupLocation="CenterScreen" Background="{DynamicResource Theme.Window}"
         FontFamily="Segoe UI" FontSize="13">
     <Window.Resources>
@@ -1485,7 +1495,7 @@ $xaml = @'
                 <Border DockPanel.Dock="Top" Padding="16,20,16,16">
                     <StackPanel>
                         <TextBlock Text="WINFORGE" FontSize="20" FontWeight="Bold" Foreground="{DynamicResource Theme.AccentText}" Margin="0,0,0,2"/>
-                        <TextBlock Text="v0.1.0" FontSize="10" Foreground="{DynamicResource Theme.TextFaint}"/>
+                        <TextBlock Text="v0.2.0" FontSize="10" Foreground="{DynamicResource Theme.TextFaint}"/>
                         <Border Height="1" Background="{DynamicResource Theme.Divider}" Margin="0,14,0,10"/>
                     </StackPanel>
                 </Border>
@@ -1994,10 +2004,11 @@ function Get-WinForgeCompanionPlugin {
     return $plugins
 }
 
-function Refresh-WinForgeCompanionPlugins {
-    [CmdletBinding()]
+function Update-WinForgeCompanionPlugin {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
     param()
 
+    if (-not $PSCmdlet.ShouldProcess('companion plugin list', 'refresh')) { return @() }
     $plugins = @(Get-WinForgeCompanionPlugin)
     if ($plugins.Count -eq 0) {
         $txtCompanionPlugins.Text = 'No companion plugins discovered in the local plugin paths.'
@@ -2010,7 +2021,7 @@ function Refresh-WinForgeCompanionPlugins {
     return $plugins
 }
 
-Refresh-WinForgeCompanionPlugins | Out-Null
+Update-WinForgeCompanionPlugin | Out-Null
 
 function Register-WinForgeCrashHandler {
     [CmdletBinding()]
@@ -3280,7 +3291,7 @@ $btnLoadFleetPreset.Add_Click({
     if ([string]::IsNullOrWhiteSpace($txtFleetPresetSource.Text)) { Write-Log 'Enter a fleet preset path or URL first.'; return }
     Import-WinForgeFleetPreset -Source $txtFleetPresetSource.Text.Trim()
 })
-$btnRefreshPlugins.Add_Click({ Refresh-WinForgeCompanionPlugins | Out-Null })
+$btnRefreshPlugins.Add_Click({ Update-WinForgeCompanionPlugin | Out-Null })
 $txtFleetPresetSource.Text = $env:WINFORGE_PRESET_SOURCE
 
 # ── BUILD CONFIG TAB ──────────────────────────────────────────────────────────
@@ -3580,7 +3591,7 @@ if ($RunTweaks.Count -gt 0) {
         } catch { Write-Log ("[!] Headless tweak deployment failed: {0}" -f $_.Exception.Message) }
     }
 }
-Write-Log "WinForge v0.1.0 initialized. Ready."
+Write-Log "WinForge v0.2.0 initialized. Ready."
 Write-Log "System: $($txtSysInfo.Text -replace "`n",' | ')"
 if (-not $NoLaunch) {
     try { $window.ShowDialog() | Out-Null }

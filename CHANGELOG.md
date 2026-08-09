@@ -2,7 +2,7 @@
 
 All notable changes to WinForge will be documented in this file.
 
-## [Unreleased]
+## [v0.2.0] - 2026-08-09
 
 - Added multi-source package installation with Scoop and Chocolatey fallback.
 - Added bounded concurrent install lanes, per-package custom arguments, live output, and post-install verification.
