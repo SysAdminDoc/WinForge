@@ -12,7 +12,7 @@ All-in-one Windows provisioning and configuration utility with a premium dark WP
 Compact 2-column grid showing Computer Name, OS/Build, CPU, RAM, User, Domain/Workgroup, and Storage (type + free space).
 
 ### Install
-Winget-based app installer with 95+ apps organized by category: Browsers, Communications, Development, Documents, Gaming, Multimedia, Pro Tools, Utilities. Sequential install with progress counters and log output. Presets for Developer, Gamer, Productivity, and Essentials workflows.
+Multi-source app installer with 95+ apps organized by category: Browsers, Communications, Development, Documents, Gaming, Multimedia, Pro Tools, Utilities. Winget is preferred, with Scoop and Chocolatey fallback when a package cannot be resolved. Choose up to four concurrent install lanes, monitor per-app output, pass custom arguments per package, and verify installs against executable/registry/package-manager state. Presets are available for Developer, Gamer, Productivity, and Essentials workflows, and search tolerates typos.
 
 ### Tweaks
 Checkbox-driven system modifications with descriptions and tooltips:

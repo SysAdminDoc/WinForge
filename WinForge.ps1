@@ -11,10 +11,21 @@
     Uses winget for package management.
 #>
 
+[CmdletBinding()]
+param(
+    [switch]$NoLaunch,
+    [switch]$NoElevation
+)
+
+$script:WinForgeVersion = '0.1.0'
+$script:WinForgeNoLaunch = $NoLaunch
+
 # ── Auto-Elevate ───────────────────────────────────────────────────────────────
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+if (-not $NoElevation -and -not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Start-Process powershell.exe -Verb RunAs -ArgumentList "-ExecutionPolicy Bypass -File `"$PSCommandPath`""
+    $elevationArgs = "-ExecutionPolicy Bypass -File `"$PSCommandPath`""
+    if ($NoLaunch) { $elevationArgs += ' -NoLaunch' }
+    Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList $elevationArgs
     exit
 }
 
@@ -210,6 +221,222 @@ $script:ConfigFeatures = [ordered]@{
         @{Name='Event Viewer';               Key='EventViewer';    Panel='eventvwr.msc'}
         @{Name='Task Scheduler';             Key='TaskSched';      Panel='taskschd.msc'}
     )
+}
+
+# ── Core helpers ──────────────────────────────────────────────────────────────
+# These helpers intentionally avoid WPF state so they can be exercised by the
+# headless test harness and reused by background package workers.
+function ConvertFrom-WinForgeCustomArgument {
+    [CmdletBinding()]
+    param([AllowNull()][string]$Text)
+
+    $result = @{}
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $result }
+
+    foreach ($entry in ($Text -split '\r?\n|;')) {
+        $line = $entry.Trim()
+        if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith('#')) { continue }
+        $parts = $line -split '\s*=\s*', 2
+        if ($parts.Count -eq 2 -and -not [string]::IsNullOrWhiteSpace($parts[0])) {
+            $result[$parts[0].Trim()] = $parts[1].Trim()
+        }
+    }
+    return $result
+}
+
+function Get-WinForgeLevenshteinDistance {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Left, [Parameter(Mandatory)][string]$Right)
+
+    $leftValue = $Left.ToLowerInvariant()
+    $rightValue = $Right.ToLowerInvariant()
+    $previous = [int[]](0..$rightValue.Length)
+
+    for ($i = 1; $i -le $leftValue.Length; $i++) {
+        $current = [int[]]::new($rightValue.Length + 1)
+        $current[0] = $i
+        for ($j = 1; $j -le $rightValue.Length; $j++) {
+            $cost = if ($leftValue[$i - 1] -eq $rightValue[$j - 1]) { 0 } else { 1 }
+            $insert = $current[$j - 1] + 1
+            $delete = $previous[$j] + 1
+            $replace = $previous[$j - 1] + $cost
+            $current[$j] = [math]::Min($insert, [math]::Min($delete, $replace))
+        }
+        $previous = $current
+    }
+    return $previous[$rightValue.Length]
+}
+
+function Get-WinForgeFuzzyScore {
+    [CmdletBinding()]
+    param([AllowNull()][string]$Text, [AllowNull()][string]$Query)
+
+    if ([string]::IsNullOrWhiteSpace($Text) -or [string]::IsNullOrWhiteSpace($Query)) { return 0.0 }
+    $candidate = $Text.ToLowerInvariant().Trim()
+    $queryValue = $Query.ToLowerInvariant().Trim()
+    if ($candidate.Contains($queryValue)) { return 1.0 }
+
+    $candidateTokens = @($candidate -split '[^a-z0-9]+') | Where-Object { $_.Length -gt 0 }
+    $queryTokens = @($queryValue -split '[^a-z0-9]+') | Where-Object { $_.Length -gt 0 }
+    $best = 0.0
+    foreach ($queryToken in $queryTokens) {
+        if ($queryToken.Length -lt 2) { continue }
+        foreach ($candidateToken in $candidateTokens) {
+            if ($candidateToken.Contains($queryToken) -or $queryToken.Contains($candidateToken)) {
+                $score = [math]::Min($queryToken.Length, $candidateToken.Length) /
+                    [double][math]::Max($queryToken.Length, $candidateToken.Length)
+            } else {
+                $length = [math]::Max($queryToken.Length, $candidateToken.Length)
+                $score = if ($length -eq 0) { 0.0 } else {
+                    1.0 - (Get-WinForgeLevenshteinDistance $queryToken $candidateToken) / [double]$length
+                }
+            }
+            if ($score -gt $best) { $best = $score }
+        }
+    }
+    return [math]::Round($best, 3)
+}
+
+function Get-WinForgePackageManagerOrder {
+    return @('winget', 'scoop', 'choco')
+}
+
+# The worker is self-contained because Start-Job serializes the script into a
+# separate PowerShell process. It emits LOG records while running and one final
+# RESULT object, allowing the UI to show per-package output as it arrives.
+$script:PackageInstallWorker = {
+    param(
+        [string]$PackageName,
+        [string]$PackageId,
+        [string]$CustomArgs,
+        [string[]]$ManagerOrder
+    )
+
+    function Write-WorkerLog {
+        param([string]$Message)
+        Write-Output ("LOG|{0}" -f $Message)
+    }
+
+    function Get-CustomToken {
+        param([string]$Text)
+        if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
+        $tokens = @()
+        foreach ($match in [regex]::Matches($Text.Trim(), '"(?:\\.|[^"])*"|\S+')) {
+            $tokens += $match.Value.Trim('"')
+        }
+        return $tokens
+    }
+
+    function Get-Verification {
+        param([string]$Name, [string]$Id)
+        $safeName = [regex]::Escape($Name)
+        $uninstallRoots = @(
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+        )
+        foreach ($root in $uninstallRoots) {
+            $match = Get-ItemProperty -Path $root -ErrorAction SilentlyContinue |
+                Where-Object { $_.DisplayName -and $_.DisplayName -match $safeName } |
+                Select-Object -First 1
+            if ($match) { return 'registry' }
+        }
+
+        $exeCandidates = @()
+        switch -Regex ($Id) {
+            'Google\.Chrome' { $exeCandidates += 'chrome.exe' }
+            'Mozilla\.Firefox' { $exeCandidates += 'firefox.exe' }
+            'Brave\.Brave' { $exeCandidates += 'brave.exe' }
+            'Microsoft\.Edge' { $exeCandidates += 'msedge.exe' }
+            'VideoLAN\.VLC' { $exeCandidates += 'vlc.exe' }
+            '7zip\.7zip' { $exeCandidates += @('7zFM.exe','7z.exe') }
+            'Git\.Git' { $exeCandidates += 'git.exe' }
+            'Microsoft\.VisualStudioCode' { $exeCandidates += 'code.exe' }
+            'Microsoft\.PowerShell' { $exeCandidates += 'pwsh.exe' }
+            'GIMP\.GIMP' { $exeCandidates += 'gimp.exe' }
+            'OBSProject\.OBSStudio' { $exeCandidates += 'obs64.exe' }
+            'Valve\.Steam' { $exeCandidates += 'steam.exe' }
+        }
+        foreach ($candidate in $exeCandidates) {
+            if (Get-Command $candidate -ErrorAction SilentlyContinue) { return 'executable' }
+            $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)
+            foreach ($root in $roots) {
+                if ($root -and (Test-Path (Join-Path $root $candidate))) { return 'executable' }
+            }
+        }
+
+        # A package-manager record is still useful for Store/MSIX packages that
+        # do not expose a conventional uninstall entry or PATH executable.
+        $listed = & winget list --id $Id --exact --accept-source-agreements 2>$null | Out-String
+        if ($LASTEXITCODE -eq 0 -and $listed -match [regex]::Escape($Id)) { return 'package-manager' }
+        return 'unverified'
+    }
+
+    if (-not $ManagerOrder -or $ManagerOrder.Count -eq 0) {
+        $ManagerOrder = @('winget', 'scoop', 'choco')
+    }
+    $customValue = if ([string]::IsNullOrWhiteSpace($CustomArgs)) { $null } else { $CustomArgs.Trim() }
+    $customTokens = Get-CustomToken $customValue
+    $attempts = @()
+    foreach ($manager in $ManagerOrder) {
+        $command = Get-Command $manager -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $command) {
+            Write-WorkerLog ("{0} is not installed; skipping." -f $manager)
+            continue
+        }
+
+        $commandArgs = @()
+        if ($manager -eq 'winget') {
+            Write-WorkerLog ("Checking {0} in winget..." -f $PackageId)
+            $probeOutput = & $command.Source show --id $PackageId --exact --accept-source-agreements 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($probeOutput)) {
+                Write-WorkerLog ("winget could not resolve {0}; trying the next provider." -f $PackageId)
+                $attempts += 'winget:unresolved'
+                continue
+            }
+            $commandArgs = @('install','--id',$PackageId,'--exact','--accept-source-agreements','--accept-package-agreements','--silent')
+            if ($customValue) { $commandArgs += @('--custom', $customValue) }
+        } elseif ($manager -eq 'scoop') {
+            $commandArgs = @('install', $PackageId)
+            if ($customTokens.Count -gt 0) { $commandArgs += $customTokens }
+        } elseif ($manager -eq 'choco') {
+            $commandArgs = @('install', $PackageId, '--yes', '--no-progress')
+            if ($customTokens.Count -gt 0) { $commandArgs += $customTokens }
+        } else {
+            continue
+        }
+
+        Write-WorkerLog ("Installing via {0}..." -f $manager)
+        $lines = & $command.Source @commandArgs 2>&1
+        foreach ($line in $lines) { Write-WorkerLog ([string]$line) }
+        $exitCode = $LASTEXITCODE
+        $attempts += ("{0}:{1}" -f $manager, $exitCode)
+        if ($exitCode -eq 0) {
+            $verification = Get-Verification $PackageName $PackageId
+            Write-WorkerLog ("Verification: {0}." -f $verification)
+            Write-Output ([pscustomobject]@{
+                Kind = 'Result'
+                Success = $true
+                PackageName = $PackageName
+                PackageId = $PackageId
+                Provider = $manager
+                Verification = $verification
+                Attempts = ($attempts -join ', ')
+            })
+            return
+        }
+        Write-WorkerLog ("{0} failed with exit code {1}; trying the next provider." -f $manager, $exitCode)
+    }
+
+    Write-Output ([pscustomobject]@{
+        Kind = 'Result'
+        Success = $false
+        PackageName = $PackageName
+        PackageId = $PackageId
+        Provider = ''
+        Verification = 'failed'
+        Attempts = ($attempts -join ', ')
+    })
 }
 
 # ── XAML ───────────────────────────────────────────────────────────────────────
@@ -634,6 +861,18 @@ $xaml = @'
                                 <Button x:Name="btnUpgradeAll" Content="  Upgrade All" Style="{StaticResource SuccessBtn}" Padding="12,5" FontSize="11" Margin="6,0,0,0"/>
                                 <Button x:Name="btnUninstallSelected" Content="  Uninstall Selected" Style="{StaticResource DangerBtn}" Padding="12,5" FontSize="11" Margin="6,0,0,0"/>
                                 <Button x:Name="btnGetInstalled" Content="  Get Installed" Style="{StaticResource SecondaryBtn}" Padding="12,5" FontSize="11" Margin="6,0,0,0"/>
+                                <Border Width="1" Background="#333346" Margin="10,2"/>
+                                <TextBlock Text="LANES:" FontSize="10" Foreground="#555570" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <ComboBox x:Name="cmbInstallConcurrency" Width="58" Height="28" VerticalAlignment="Center" ToolTip="Number of concurrent package installs">
+                                    <ComboBoxItem Content="1" IsSelected="True"/>
+                                    <ComboBoxItem Content="2"/>
+                                    <ComboBoxItem Content="3"/>
+                                    <ComboBoxItem Content="4"/>
+                                </ComboBox>
+                                <TextBlock Text="CUSTOM:" FontSize="10" Foreground="#555570" FontWeight="Bold" VerticalAlignment="Center" Margin="12,0,6,0"/>
+                                <TextBox x:Name="txtCustomArgs" Width="330" Height="28" VerticalContentAlignment="Center"
+                                         ToolTip="Per-package arguments: package.id=--location &quot;D:\Apps&quot;; another.id=--scope user"
+                                         Tag="package.id=--custom-args"/>
                             </StackPanel>
                         </Border>
                         <!-- App Grid -->
@@ -773,6 +1012,8 @@ $infoRAM            = $window.FindName('infoRAM')
 $infoUser           = $window.FindName('infoUser')
 $infoDomain         = $window.FindName('infoDomain')
 $infoStorage        = $window.FindName('infoStorage')
+$cmbInstallConcurrency = $window.FindName('cmbInstallConcurrency')
+$txtCustomArgs      = $window.FindName('txtCustomArgs')
 
 # Pages
 $pageInstall = $window.FindName('pageInstall')
@@ -912,7 +1153,9 @@ $txtSearch.Add_TextChanged({
         if ([string]::IsNullOrEmpty($term)) {
             $cb.Visibility = 'Visible'
         } else {
-            if ($cb.Content.ToString().ToLower().Contains($term) -or $cb.Tag.ToString().ToLower().Contains($term)) {
+            $searchText = "{0} {1}" -f $cb.Content, $cb.Tag
+            $score = Get-WinForgeFuzzyScore -Text $searchText -Query $term
+            if ($score -ge 0.42) {
                 $cb.Visibility = 'Visible'
             } else {
                 $cb.Visibility = 'Collapsed'
@@ -937,95 +1180,136 @@ function Get-SelectedApps {
     return $selected
 }
 
-function Run-Async {
-    param([scriptblock]$Work, [scriptblock]$OnComplete)
-    $ps = [PowerShell]::Create()
-    $ps.AddScript($Work) | Out-Null
-    $handle = $ps.BeginInvoke()
-    $timer = New-Object System.Windows.Threading.DispatcherTimer
-    $timer.Interval = [TimeSpan]::FromMilliseconds(300)
-    $timer.Add_Tick({
-        if ($handle.IsCompleted) {
-            $timer.Stop()
-            try { $result = $ps.EndInvoke($handle) } catch {}
-            $ps.Dispose()
-            if ($OnComplete) { & $OnComplete $result }
-        }
-    }.GetNewClosure())
-    $timer.Start()
+function Get-SelectedAppCustomArgumentMap {
+    $configured = ConvertFrom-WinForgeCustomArgument -Text $txtCustomArgs.Text
+    $selected = @{}
+    foreach ($id in (Get-SelectedApps)) {
+        if ($configured.ContainsKey($id)) { $selected[$id] = $configured[$id] }
+    }
+    return $selected
 }
 
-$window.FindName('btnInstallSelected').Add_Click({
-    $apps = Get-SelectedApps
-    if ($apps.Count -eq 0) { Write-Log "No applications selected."; return }
-    $total = $apps.Count
-    Write-Log "=== Installing $total application(s) ==="
-    $window.FindName('btnInstallSelected').IsEnabled = $false
-    $script:InstallQueue = [System.Collections.ArrayList]@($apps)
-    $script:InstallIndex = 0
-    $script:InstallSuccess = 0
-    $script:InstallFail = 0
-    $script:InstallTotal = $total
-
-    function Start-NextInstall {
-        if ($script:InstallIndex -ge $script:InstallTotal) {
-            Write-Log "=== Install complete: $($script:InstallSuccess) succeeded, $($script:InstallFail) failed out of $($script:InstallTotal) ==="
-            $window.FindName('btnInstallSelected').IsEnabled = $true
-            return
-        }
-        $idx = $script:InstallIndex
-        $appId = $script:InstallQueue[$idx]
-        $name = $script:AppCheckboxes[$appId].Content
-        $num = $idx + 1
-        Write-Log "Installing $num of $($script:InstallTotal): $name ($appId)..."
-
-        $ps = [PowerShell]::Create()
-        $ps.AddScript({
-            param($pkgId)
-            $output = @()
-            try {
-                $lines = & winget install --id $pkgId --accept-source-agreements --accept-package-agreements --silent 2>&1
-                foreach ($l in $lines) { $output += "$l" }
-                return "SUCCESS|$($output -join '`n')"
-            } catch {
-                return "FAIL|$($_.Exception.Message)"
-            }
-        }).AddArgument($appId) | Out-Null
-        $handle = $ps.BeginInvoke()
-        $timer = New-Object System.Windows.Threading.DispatcherTimer
-        $timer.Interval = [TimeSpan]::FromMilliseconds(500)
-        $timer.Tag = @{ PS=$ps; Handle=$handle; Name=$name; Id=$appId }
-        $timer.Add_Tick({
-            $ctx = $this.Tag
-            if ($ctx.Handle.IsCompleted) {
-                $this.Stop()
-                try {
-                    $res = ($ctx.PS.EndInvoke($ctx.Handle) | Out-String).Trim()
-                    if ($res -match '^SUCCESS') {
-                        $script:InstallSuccess++
-                        $detail = $res -replace '^SUCCESS\|',''
-                        Write-Log "[OK] $($ctx.Name) installed successfully."
-                        if ($detail -and $detail.Length -gt 0 -and $detail.Length -lt 500) {
-                            Write-Log "    $detail"
-                        }
-                    } else {
-                        $script:InstallFail++
-                        $detail = $res -replace '^FAIL\|',''
-                        Write-Log "[FAIL] $($ctx.Name): $detail"
-                    }
-                } catch {
-                    $script:InstallFail++
-                    Write-Log "[FAIL] $($ctx.Name) installation error."
-                }
-                $ctx.PS.Dispose()
-                $script:InstallIndex++
-                Start-NextInstall
-            }
-        }.GetNewClosure())
-        $timer.Start()
+function Complete-InstallQueue {
+    if (-not $script:InstallState) { return }
+    $state = $script:InstallState
+    if ($script:InstallTimer) {
+        $script:InstallTimer.Stop()
+        $script:InstallTimer = $null
     }
-    Start-NextInstall
-})
+    foreach ($jobId in @($state.Active.Keys)) {
+        $ctx = $state.Active[$jobId]
+        Stop-Job -Job $ctx.Job -ErrorAction SilentlyContinue
+        Remove-Job -Job $ctx.Job -Force -ErrorAction SilentlyContinue
+    }
+    $state.Active.Clear()
+    $window.FindName('btnInstallSelected').IsEnabled = $true
+    Write-Log ("=== Install complete: {0} succeeded, {1} failed out of {2} ===" -f
+        $state.Success, $state.Failed, $state.Total)
+    $script:InstallState = $null
+}
+
+function Update-InstallQueue {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
+    param()
+    if (-not $PSCmdlet.ShouldProcess('package queue', 'advance installation jobs')) { return }
+    $state = $script:InstallState
+    if (-not $state) { return }
+
+    while ($state.Active.Count -lt $state.Concurrency -and $state.NextIndex -lt $state.Total) {
+        $appId = $state.Queue[$state.NextIndex]
+        $name = [string]$script:AppCheckboxes[$appId].Content
+        $custom = if ($state.CustomArgs.ContainsKey($appId)) { [string]$state.CustomArgs[$appId] } else { '' }
+        $position = $state.NextIndex + 1
+        try {
+            $job = Start-Job -ScriptBlock $script:PackageInstallWorker -ArgumentList $name, $appId, $custom
+            $state.Active[$job.Id] = @{
+                Job = $job
+                Name = $name
+                Id = $appId
+                Result = $null
+                Logged = @{}
+            }
+            Write-Log ("Installing {0} of {1}: {2} ({3}) [lane {4}]..." -f
+                $position, $state.Total, $name, $appId, ($state.Active.Count))
+        } catch {
+            $state.Failed++
+            Write-Log ("[FAIL] Could not start installer for {0}: {1}" -f $name, $_.Exception.Message)
+        }
+        $state.NextIndex++
+    }
+
+    foreach ($jobId in @($state.Active.Keys)) {
+        $ctx = $state.Active[$jobId]
+        $records = @(Receive-Job -Job $ctx.Job -ErrorAction SilentlyContinue)
+        foreach ($record in $records) {
+            if ($record -is [string]) {
+                if ($record.StartsWith('LOG|')) {
+                    Write-Log ("[{0}] {1}" -f $ctx.Name, ($record -replace '^LOG\|',''))
+                } elseif (-not [string]::IsNullOrWhiteSpace($record)) {
+                    Write-Log ("[{0}] {1}" -f $ctx.Name, $record)
+                }
+            } elseif ($record.PSObject.Properties['Kind'] -and $record.Kind -eq 'Result') {
+                $ctx.Result = $record
+            }
+        }
+
+        if ($ctx.Job.State -in @('Completed','Failed','Stopped')) {
+            if ($ctx.Result -and $ctx.Result.Success) {
+                $state.Success++
+                Write-Log ("[OK] {0} installed via {1}; verified by {2}." -f
+                    $ctx.Name, $ctx.Result.Provider, $ctx.Result.Verification)
+            } else {
+                $state.Failed++
+                $attempts = if ($ctx.Result) { $ctx.Result.Attempts } else { 'worker failed before returning a result' }
+                Write-Log ("[FAIL] {0}; attempts: {1}" -f $ctx.Name, $attempts)
+            }
+            Remove-Job -Job $ctx.Job -Force -ErrorAction SilentlyContinue
+            $state.Active.Remove($jobId)
+        }
+    }
+
+    if ($state.NextIndex -ge $state.Total -and $state.Active.Count -eq 0) {
+        Complete-InstallQueue
+    }
+}
+
+function Start-InstallQueue {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
+    param()
+    if (-not $PSCmdlet.ShouldProcess('selected packages', 'install')) { return }
+    if ($script:InstallState) {
+        Write-Log 'An installation is already in progress.'
+        return
+    }
+    $apps = @(Get-SelectedApps)
+    if ($apps.Count -eq 0) { Write-Log 'No applications selected.'; return }
+    $concurrency = 1
+    if ($cmbInstallConcurrency -and $cmbInstallConcurrency.SelectedItem) {
+        [int]::TryParse([string]$cmbInstallConcurrency.SelectedItem.Content, [ref]$concurrency) | Out-Null
+    }
+    $concurrency = [math]::Max(1, [math]::Min(4, $concurrency))
+    $customArgs = Get-SelectedAppCustomArgumentMap
+    $script:InstallState = @{
+        Queue = $apps
+        Total = $apps.Count
+        NextIndex = 0
+        Success = 0
+        Failed = 0
+        Concurrency = $concurrency
+        CustomArgs = $customArgs
+        Active = @{}
+    }
+    Write-Log ("=== Installing {0} application(s) with {1} concurrent lane(s) ===" -f $apps.Count, $concurrency)
+    if ($customArgs.Count -gt 0) { Write-Log ("Custom arguments loaded for {0} package(s)." -f $customArgs.Count) }
+    $window.FindName('btnInstallSelected').IsEnabled = $false
+    $script:InstallTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:InstallTimer.Interval = [TimeSpan]::FromMilliseconds(350)
+    $script:InstallTimer.Add_Tick({ Update-InstallQueue }.GetNewClosure())
+    $script:InstallTimer.Start()
+    Update-InstallQueue
+}
+
+$window.FindName('btnInstallSelected').Add_Click({ Start-InstallQueue })
 
 $window.FindName('btnUpgradeAll').Add_Click({
     Write-Log "Upgrading all packages via winget..."
@@ -1683,7 +1967,10 @@ $navExport.Add_Click({
         $config = @{
             WFApps = @(foreach ($kvp in $script:AppCheckboxes.GetEnumerator()) { if ($kvp.Value.IsChecked) { $kvp.Key } })
             WFTweaks = @(foreach ($kvp in $script:TweakCheckboxes.GetEnumerator()) { if ($kvp.Value.IsChecked) { $kvp.Key } })
+            WFCustomArgs = @{}
         }
+        $customArgs = ConvertFrom-WinForgeCustomArgument -Text $txtCustomArgs.Text
+        foreach ($entry in $customArgs.GetEnumerator()) { $config.WFCustomArgs[$entry.Key] = $entry.Value }
         $config | ConvertTo-Json | Set-Content -Path $dlg.FileName -Encoding UTF8
         Write-Log "[OK] Config exported to $($dlg.FileName)"
     }
@@ -1707,6 +1994,13 @@ $navImport.Add_Click({
                     if ($script:TweakCheckboxes.ContainsKey($k)) { $script:TweakCheckboxes[$k].IsChecked = $true }
                 }
             }
+            $txtCustomArgs.Text = ''
+            if ($config.WFCustomArgs) {
+                $customLines = foreach ($property in $config.WFCustomArgs.PSObject.Properties) {
+                    "{0}={1}" -f $property.Name, $property.Value
+                }
+                $txtCustomArgs.Text = $customLines -join '; '
+            }
             Write-Log "[OK] Config imported from $($dlg.FileName)"
         } catch { Write-Log "[!] Failed to import config: $_" }
     }
@@ -1715,4 +2009,6 @@ $navImport.Add_Click({
 # ── Launch ─────────────────────────────────────────────────────────────────────
 Write-Log "WinForge v0.1.0 initialized. Ready."
 Write-Log "System: $($txtSysInfo.Text -replace "`n",' | ')"
-$window.ShowDialog() | Out-Null
+if (-not $NoLaunch) {
+    $window.ShowDialog() | Out-Null
+}
