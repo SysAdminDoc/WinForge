@@ -26,4 +26,13 @@ Describe 'WinForge core helpers' {
     It 'returns the supported package fallback order' {
         Get-WinForgePackageManagerOrder | Should -Be @('winget', 'scoop', 'choco')
     }
+
+    It 'exports and imports a DSC v3 WinGet configuration' {
+        $yaml = ConvertTo-WinForgeWingetConfiguration -PackageIds @('Git.Git', 'Microsoft.PowerShell')
+        $yaml | Should -Match 'identifier: dscv3'
+        $yaml | Should -Match 'type: Microsoft.WinGet/Package'
+
+        $ids = @(ConvertFrom-WinForgeWingetConfiguration -Content $yaml)
+        $ids | Should -Be @('Git.Git', 'Microsoft.PowerShell')
+    }
 }

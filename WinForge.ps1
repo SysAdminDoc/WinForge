@@ -301,6 +301,53 @@ function Get-WinForgePackageManagerOrder {
     return @('winget', 'scoop', 'choco')
 }
 
+function ConvertTo-WinForgeWingetConfiguration {
+    [CmdletBinding()]
+    param([string[]]$PackageIds)
+
+    $lines = @(
+        '$schema: https://raw.githubusercontent.com/PowerShell/DSC/main/schemas/2023/08/config/document.json'
+        'metadata:'
+        '  winget:'
+        '    processor:'
+        '      identifier: dscv3'
+        'resources:'
+    )
+    $index = 0
+    foreach ($packageId in @($PackageIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $index++
+        $safeName = ($packageId -replace '[^A-Za-z0-9_-]', '-')
+        if ([string]::IsNullOrWhiteSpace($safeName)) { $safeName = "Package$index" }
+        $lines += @(
+            ("- type: Microsoft.WinGet/Package"),
+            ("  name: {0}-{1}" -f $safeName, $index),
+            '  properties:',
+            ("    id: {0}" -f $packageId),
+            '    source: winget',
+            '    useLatest: true',
+            '  metadata:',
+            ("    description: Install {0}" -f $packageId)
+        )
+    }
+    return (($lines -join [Environment]::NewLine) + [Environment]::NewLine)
+}
+
+function ConvertFrom-WinForgeWingetConfiguration {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Content)
+
+    $ids = @()
+    foreach ($line in ($Content -split '\r?\n')) {
+        # Support both DSC v3 (id) and older WinGet configuration exports
+        # (packageIdentifier) so existing profiles remain portable.
+        if ($line -match '^\s+(?:id|packageIdentifier):\s*["'']?([^"''\s]+)["'']?\s*$') {
+            $value = $Matches[1].Trim()
+            if ($value -and $ids -notcontains $value) { $ids += $value }
+        }
+    }
+    return $ids
+}
+
 # The worker is self-contained because Start-Job serializes the script into a
 # separate PowerShell process. It emits LOG records while running and one final
 # RESULT object, allowing the UI to show per-package output as it arrives.
@@ -760,6 +807,8 @@ $xaml = @'
                     <TextBlock Text="QUICK ACTIONS" FontSize="9" Foreground="#444460" FontWeight="Bold" Margin="14,4,0,8"/>
                     <Button x:Name="navExport"  Content="  Export Config" Style="{StaticResource NavBtn}"/>
                     <Button x:Name="navImport"  Content="  Import Config" Style="{StaticResource NavBtn}"/>
+                    <Button x:Name="navExportWinget" Content="  Export WinGet" Style="{StaticResource NavBtn}"/>
+                    <Button x:Name="navImportWinget" Content="  Import WinGet" Style="{StaticResource NavBtn}"/>
                 </StackPanel>
             </DockPanel>
         </Border>
@@ -1028,6 +1077,8 @@ $navConfig  = $window.FindName('navConfig')
 $navUpdates = $window.FindName('navUpdates')
 $navExport  = $window.FindName('navExport')
 $navImport  = $window.FindName('navImport')
+$navExportWinget = $window.FindName('navExportWinget')
+$navImportWinget = $window.FindName('navImportWinget')
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 function Write-Log {
@@ -1959,6 +2010,46 @@ $window.FindName('btnResetWU').Add_Click({
 })
 
 # ── Export/Import Config ───────────────────────────────────────────────────────
+function Export-WinForgeWingetConfiguration {
+    $apps = @(Get-SelectedApps)
+    if ($apps.Count -eq 0) { Write-Log 'No applications selected for WinGet export.'; return }
+    $dlg = New-Object Microsoft.Win32.SaveFileDialog
+    $dlg.Filter = 'WinGet Configuration|*.winget;*.yaml;*.yml'
+    $dlg.FileName = 'WinForge-Configuration.winget'
+    if ($dlg.ShowDialog()) {
+        $yaml = ConvertTo-WinForgeWingetConfiguration -PackageIds $apps
+        $yaml | Set-Content -LiteralPath $dlg.FileName -Encoding UTF8
+        Write-Log ("[OK] WinGet DSC v3 configuration exported to {0}" -f $dlg.FileName)
+        $custom = ConvertFrom-WinForgeCustomArgument -Text $txtCustomArgs.Text
+        if ($custom.Count -gt 0) { Write-Log '[!] DSC v3 package resources do not carry WinForge custom arguments; JSON export retains them.' }
+    }
+}
+
+function Import-WinForgeWingetConfiguration {
+    $dlg = New-Object Microsoft.Win32.OpenFileDialog
+    $dlg.Filter = 'WinGet Configuration|*.winget;*.yaml;*.yml|All files|*.*'
+    if ($dlg.ShowDialog()) {
+        try {
+            $yaml = Get-Content -LiteralPath $dlg.FileName -Raw
+            $apps = @(ConvertFrom-WinForgeWingetConfiguration -Content $yaml)
+            if ($apps.Count -eq 0) { throw 'No WinGet package resources were found.' }
+            foreach ($cb in $script:AppCheckboxes.Values) { $cb.IsChecked = $false }
+            $matched = 0
+            foreach ($id in $apps) {
+                if ($script:AppCheckboxes.ContainsKey($id)) {
+                    $script:AppCheckboxes[$id].IsChecked = $true
+                    $matched++
+                }
+            }
+            Write-Log ("[OK] Imported {0} WinGet package(s); {1} matched the catalog." -f $apps.Count, $matched)
+            if ($matched -lt $apps.Count) { Write-Log '[!] Some imported package IDs are not in the current WinForge catalog.' }
+        } catch { Write-Log ("[!] Failed to import WinGet configuration: {0}" -f $_.Exception.Message) }
+    }
+}
+
+$navExportWinget.Add_Click({ Export-WinForgeWingetConfiguration })
+$navImportWinget.Add_Click({ Import-WinForgeWingetConfiguration })
+
 $navExport.Add_Click({
     $dlg = New-Object Microsoft.Win32.SaveFileDialog
     $dlg.Filter = "JSON Config|*.json"

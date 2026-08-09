@@ -7,6 +7,7 @@ All notable changes to WinForge will be documented in this file.
 - Added multi-source package installation with Scoop and Chocolatey fallback.
 - Added bounded concurrent install lanes, per-package custom arguments, live output, and post-install verification.
 - Added typo-tolerant application search and portable custom-argument profile export/import.
+- Added WinGet DSC v3 `.winget` configuration import/export for replayable package bundles.
 
 ## [v0.1.0] - %Y->- (HEAD -> main, tag: v0.1.0, origin/main, origin/HEAD)
 

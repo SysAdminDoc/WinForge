@@ -27,7 +27,7 @@ Windows optional features and system fixes (.NET 3.5, Hyper-V, WSL, SFC, DISM, n
 DNS configuration (Google, Cloudflare, Quad9, OpenDNS, AdGuard), Windows Update policy management, pause/reset.
 
 ### Config Profiles
-Export and import your selections (apps + tweaks) as JSON files. Share configurations between machines or save favorite setups.
+Export and import your selections (apps + tweaks) as JSON files, or export/import a DSC v3 `.winget` package bundle for replay through `winget configure`. Share configurations between machines or save favorite setups.
 
 ## Usage
 
