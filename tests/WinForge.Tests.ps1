@@ -35,4 +35,19 @@ Describe 'WinForge core helpers' {
         $ids = @(ConvertFrom-WinForgeWingetConfiguration -Content $yaml)
         $ids | Should -Be @('Git.Git', 'Microsoft.PowerShell')
     }
+
+    It 'provides registry definitions for multi-value tweaks' {
+        $definitions = @(Get-WinForgeTweakRegistryDefinition -Key GameDVR)
+
+        $definitions.Count | Should -Be 2
+        $definitions.Name | Should -Contain 'GameDVR_Enabled'
+        $definitions.Name | Should -Contain 'AllowGameDVR'
+    }
+
+    It 'generates a dry-run script that invokes the selected tweak executor' {
+        $scriptText = New-WinForgeDryRunScript -Keys @('Telemetry', 'Hibernation')
+
+        $scriptText | Should -Match "Invoke-Tweak -Key 'Telemetry'"
+        $scriptText | Should -Match "Invoke-Tweak -Key 'Hibernation'"
+    }
 }

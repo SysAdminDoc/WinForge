@@ -8,6 +8,7 @@ All notable changes to WinForge will be documented in this file.
 - Added bounded concurrent install lanes, per-package custom arguments, live output, and post-install verification.
 - Added typo-tolerant application search and portable custom-argument profile export/import.
 - Added WinGet DSC v3 `.winget` configuration import/export for replayable package bundles.
+- Added tweak change previews, registry history restore, audit mode, dry-run scripts, ADMX export, risk guidance, conflict detection, and enterprise policy safeguards.
 
 ## [v0.1.0] - %Y->- (HEAD -> main, tag: v0.1.0, origin/main, origin/HEAD)
 

@@ -223,6 +223,177 @@ $script:ConfigFeatures = [ordered]@{
     )
 }
 
+# ── Tweak metadata and registry model ─────────────────────────────────────────
+$script:TweakMetadata = @{
+    RestorePoint      = @{ Risk = 'Green';  Revert = 'Restore points do not change a setting.' }
+    TempFiles         = @{ Risk = 'Green';  Revert = 'Deleted temporary files cannot be restored.' }
+    Telemetry         = @{ Risk = 'Red';    Revert = 'Re-enable telemetry and restore the DiagTrack service.' }
+    ActivityHistory   = @{ Risk = 'Yellow'; Revert = 'Re-enable activity feed and publishing policies.' }
+    LocationTracking  = @{ Risk = 'Yellow'; Revert = 'Set the location consent value back to Allow.' }
+    Hibernation       = @{ Risk = 'Yellow'; Revert = 'Run powercfg /h on to restore hibernation.' }
+    ConsumerFeatures  = @{ Risk = 'Yellow'; Revert = 'Allow Windows consumer features again.' }
+    ServicesManual    = @{ Risk = 'Red';    Revert = 'Restore affected services to Automatic and start them.' }
+    PS7Telemetry      = @{ Risk = 'Green';  Revert = 'Set POWERSHELL_TELEMETRY_OPTOUT back to 0.' }
+    Widgets           = @{ Risk = 'Yellow'; Revert = 'Allow Windows Widgets again.' }
+    EndTask           = @{ Risk = 'Green';  Revert = 'Remove the taskbar End Task policy value.' }
+    DiskCleanup       = @{ Risk = 'Green';  Revert = 'Disk Cleanup is an action with no persistent setting.' }
+    Cortana           = @{ Risk = 'Yellow'; Revert = 'Allow Cortana through the Windows Search policy.' }
+    GameDVR           = @{ Risk = 'Yellow'; Revert = 'Re-enable Game DVR in the user and machine policies.' }
+    WiFiSense         = @{ Risk = 'Yellow'; Revert = 'Allow OEM Wi-Fi auto-connect behavior again.' }
+    StorageSense      = @{ Risk = 'Yellow'; Revert = 'Re-enable Storage Sense policy value.' }
+    Copilot           = @{ Risk = 'Yellow'; Revert = 'Remove the Windows Copilot block.' }
+    Recall            = @{ Risk = 'Red';    Revert = 'Remove the Recall data-analysis block.' }
+    NewsInterests     = @{ Risk = 'Green';  Revert = 'Re-enable News and Interests policy.' }
+    BingSearch        = @{ Risk = 'Yellow'; Revert = 'Allow web suggestions in Start search.' }
+    SearchHighlights  = @{ Risk = 'Green';  Revert = 'Re-enable search highlights.' }
+    FileExtensions    = @{ Risk = 'Green';  Revert = 'Restore hidden file extensions.' }
+    HiddenFiles       = @{ Risk = 'Yellow'; Revert = 'Hide protected/hidden files again.' }
+    MouseAccel        = @{ Risk = 'Green';  Revert = 'Restore standard mouse acceleration values.' }
+    ClassicContext    = @{ Risk = 'Green';  Revert = 'Remove the classic context-menu override.' }
+    UltimatePower     = @{ Risk = 'Yellow'; Revert = 'Switch back to the Balanced power plan.' }
+    AdvertisingID     = @{ Risk = 'Green';  Revert = 'Re-enable the Advertising ID.' }
+    AppLaunchTracking = @{ Risk = 'Green';  Revert = 'Re-enable app launch tracking.' }
+    FeedbackRequests  = @{ Risk = 'Green';  Revert = 'Allow feedback request notifications.' }
+    TailoredExp       = @{ Risk = 'Green';  Revert = 'Re-enable tailored experiences.' }
+    DiagnosticData    = @{ Risk = 'Red';    Revert = 'Restore the diagnostic-data policy to Full.' }
+    ClipboardHistory  = @{ Risk = 'Yellow'; Revert = 'Re-enable clipboard history.' }
+    SpeechRecognition = @{ Risk = 'Yellow'; Revert = 'Allow online speech recognition.' }
+    InputPersonal     = @{ Risk = 'Yellow'; Revert = 'Allow input personalization.' }
+}
+
+function Get-WinForgeTweakInfo {
+    param([Parameter(Mandatory)][string]$Key)
+    if ($script:TweakMetadata.ContainsKey($Key)) { return $script:TweakMetadata[$Key] }
+    return @{ Risk = 'Yellow'; Revert = 'Use the Restore Last Set action to restore the previous snapshot.' }
+}
+
+function Get-WinForgeTweakRegistryDefinition {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Key)
+
+    $definitions = New-Object System.Collections.ArrayList
+    $add = {
+        param($Path, $Name, $Apply, $Undo, $Type = 'DWord', $Kind = 'Registry')
+        [void]$definitions.Add([pscustomobject]@{
+            Key = $Key; Path = $Path; Name = $Name; Apply = $Apply; Undo = $Undo
+            Type = $Type; Kind = $Kind
+        })
+    }
+    switch ($Key) {
+        'Telemetry'       { & $add 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'AllowTelemetry' 0 3 }
+        'ActivityHistory' { & $add 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' 'EnableActivityFeed' 0 1; & $add 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' 'PublishUserActivities' 0 1 }
+        'LocationTracking'{ & $add 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location' 'Value' 'Deny' 'Allow' 'String' }
+        'ConsumerFeatures' { & $add 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent' 'DisableWindowsConsumerFeatures' 1 0 }
+        'Widgets'         { & $add 'HKLM:\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests' 0 1 }
+        'EndTask'         { & $add 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings' 'TaskbarEndTask' 1 0 }
+        'Cortana'         { & $add 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'AllowCortana' 0 1 }
+        'GameDVR'         { & $add 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled' 0 1; & $add 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR' 'AllowGameDVR' 0 1 }
+        'WiFiSense'       { & $add 'HKLM:\SOFTWARE\Microsoft\WcmSvc\wifinetworkmanager\config' 'AutoConnectAllowedOEM' 0 1 }
+        'StorageSense'    { & $add 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy' '01' 0 1 }
+        'Copilot'         { & $add 'HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot' 'TurnOffWindowsCopilot' 1 0 }
+        'Recall'          { & $add 'HKCU:\Software\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis' 1 0 }
+        'NewsInterests'   { & $add 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Feeds' 'EnableFeeds' 0 1 }
+        'BingSearch'      { & $add 'HKCU:\SOFTWARE\Policies\Microsoft\Windows\Explorer' 'DisableSearchBoxSuggestions' 1 0 }
+        'SearchHighlights'{ & $add 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'EnableDynamicContentInWSB' 0 1 }
+        'FileExtensions'  { & $add 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'HideFileExt' 0 1 }
+        'HiddenFiles'     { & $add 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Hidden' 1 2 }
+        'MouseAccel'      { & $add 'HKCU:\Control Panel\Mouse' 'MouseSpeed' 0 1 'String'; & $add 'HKCU:\Control Panel\Mouse' 'MouseThreshold1' 0 1 'String'; & $add 'HKCU:\Control Panel\Mouse' 'MouseThreshold2' 0 1 'String' }
+        'ClassicContext'  { & $add 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32' '(key)' 'exists' 'absent' 'Path' 'RegistryPath' }
+        'AdvertisingID'   { & $add 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\AdvertisingInfo' 'Enabled' 0 1 }
+        'AppLaunchTracking' { & $add 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'Start_TrackProgs' 0 1 }
+        'FeedbackRequests'{ & $add 'HKCU:\SOFTWARE\Microsoft\Siuf\Rules' 'NumberOfSIUFInPeriod' 0 1 }
+        'TailoredExp'     { & $add 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Privacy' 'TailoredExperiencesWithDiagnosticDataEnabled' 0 1 }
+        'DiagnosticData'  { & $add 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'AllowTelemetry' 0 3 }
+        'ClipboardHistory'{ & $add 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' 'AllowClipboardHistory' 0 1 }
+        'SpeechRecognition' { & $add 'HKCU:\SOFTWARE\Microsoft\Speech_OneCore\Settings\OnlineSpeechPrivacy' 'HasAccepted' 0 1 }
+        'InputPersonal'   { & $add 'HKCU:\SOFTWARE\Microsoft\InputPersonalization' 'RestrictImplicitTextCollection' 1 0; & $add 'HKCU:\SOFTWARE\Microsoft\InputPersonalization' 'RestrictImplicitInkCollection' 1 0 }
+    }
+    return $definitions
+}
+
+function Get-WinForgeTweakChangeSet {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Key, [bool]$Undo = $false)
+
+    $definitions = @(Get-WinForgeTweakRegistryDefinition -Key $Key)
+    if ($definitions.Count -eq 0) {
+        $description = switch ($Key) {
+            'RestorePoint' { 'Create a system restore point' }
+            'TempFiles' { 'Delete temporary files' }
+            'Hibernation' { 'Run powercfg /h off' }
+            'ServicesManual' { 'Change selected Windows services to Manual' }
+            'PS7Telemetry' { 'Set the machine PowerShell telemetry opt-out variable' }
+            'DiskCleanup' { 'Launch Windows Disk Cleanup' }
+            'UltimatePower' { 'Activate the Ultimate Performance power plan' }
+            default { 'Run the selected system action' }
+        }
+        return [pscustomobject]@{ Key = $Key; Kind = 'Action'; Path = ''; Name = $description; Current = 'not evaluated'; Target = $(if ($Undo) { 'restore' } else { 'run' }); CurrentExists = $false; Type = 'Action' }
+    }
+
+    $changes = @()
+    foreach ($definition in $definitions) {
+        $exists = Test-Path -LiteralPath $definition.Path
+        $current = $null
+        if ($exists -and $definition.Kind -eq 'RegistryPath') {
+            $current = 'exists'
+        } elseif ($exists) {
+            $property = Get-ItemProperty -LiteralPath $definition.Path -Name $definition.Name -ErrorAction SilentlyContinue
+            if ($property) { $current = $property.PSObject.Properties[$definition.Name].Value }
+        }
+        $target = if ($Undo) { $definition.Undo } else { $definition.Apply }
+        $changes += [pscustomobject]@{
+            Key = $Key; Kind = $definition.Kind; Path = $definition.Path; Name = $definition.Name
+            Current = $current; CurrentExists = ($null -ne $current)
+            Target = $target; Undo = $definition.Undo; Type = $definition.Type
+        }
+    }
+    return $changes
+}
+
+function Get-WinForgeTweakRiskBrush {
+    param([Parameter(Mandatory)][string]$Risk)
+    switch ($Risk) {
+        'Green' { return '#4ade80' }
+        'Red' { return '#f87171' }
+        default { return '#facc15' }
+    }
+}
+
+function Get-WinForgeThirdPartyTweakConflict {
+    [CmdletBinding()]
+    param()
+
+    $markers = @(
+        @{ Name = 'O&O ShutUp10++'; Paths = @('HKCU:\SOFTWARE\O&O\ShutUp10', 'HKLM:\SOFTWARE\O&O\ShutUp10') }
+        @{ Name = 'WPD'; Paths = @('HKCU:\SOFTWARE\WPD', 'HKLM:\SOFTWARE\WPD') }
+        @{ Name = 'Bloatynosy'; Paths = @('HKCU:\SOFTWARE\Bloatynosy', 'HKLM:\SOFTWARE\Bloatynosy') }
+        @{ Name = 'Win11Debloat'; Paths = @('HKCU:\SOFTWARE\Win11Debloat', 'HKLM:\SOFTWARE\Win11Debloat') }
+    )
+    $foundConflicts = @()
+    foreach ($marker in $markers) {
+        foreach ($path in $marker.Paths) {
+            if (Test-Path -LiteralPath $path) {
+                $foundConflicts += [pscustomobject]@{ Name = $marker.Name; Path = $path }
+                break
+            }
+        }
+    }
+    return $foundConflicts
+}
+
+function Get-WinForgeEnterpriseState {
+    [CmdletBinding()]
+    param()
+
+    $markers = @(
+        @{ Name = 'MDM policy store'; Path = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device' }
+        @{ Name = 'Enrollment records'; Path = 'HKLM:\SOFTWARE\Microsoft\Enrollments' }
+        @{ Name = 'Enterprise management'; Path = 'HKLM:\SOFTWARE\Microsoft\EnterpriseResourceManager' }
+    )
+    $sources = @($markers | Where-Object { Test-Path -LiteralPath $_.Path })
+    return [pscustomobject]@{ IsManaged = ($sources.Count -gt 0); Sources = $sources }
+}
+
 # ── Core helpers ──────────────────────────────────────────────────────────────
 # These helpers intentionally avoid WPF state so they can be exercised by the
 # headless test harness and reused by background package workers.
@@ -939,14 +1110,18 @@ $xaml = @'
                                 <StackPanel>
                                     <TextBlock Text="System Tweaks" FontSize="22" FontWeight="Bold" Foreground="#e8e8f0"/>
                                     <TextBlock Text="Optimize Windows for performance, privacy, and usability" FontSize="12" Foreground="#666680" Margin="0,4,0,0"/>
+                                    <TextBlock x:Name="txtEnterpriseBanner" Text="" Visibility="Collapsed" FontSize="11" Foreground="#facc15" TextWrapping="Wrap" Margin="0,6,0,0"/>
                                 </StackPanel>
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" DockPanel.Dock="Right" VerticalAlignment="Center">
                                     <Button x:Name="btnTweakPresetEssential" Content="Essential Preset" Style="{StaticResource SecondaryBtn}" Margin="0,0,6,0"/>
                                     <Button x:Name="btnTweakPresetPrivacy" Content="Privacy Preset" Style="{StaticResource SecondaryBtn}" Margin="0,0,6,0"/>
+                                    <Button x:Name="btnAuditTweaks" Content="Audit" Style="{StaticResource SecondaryBtn}" Margin="0,0,6,0"/>
+                                    <Button x:Name="btnDryRunTweaks" Content="Dry Run" Style="{StaticResource SecondaryBtn}" Margin="0,0,6,0"/>
+                                    <Button x:Name="btnExportADMX" Content="Export ADMX" Style="{StaticResource SecondaryBtn}" Margin="0,0,6,0"/>
                                     <Button x:Name="btnTweakSelectAll" Content="Select All" Style="{StaticResource SecondaryBtn}" Margin="0,0,6,0"/>
                                     <Button x:Name="btnTweakDeselectAll" Content="Clear All" Style="{StaticResource SecondaryBtn}" Margin="0,0,10,0"/>
                                     <Button x:Name="btnRunTweaks" Content="  Run Tweaks" Style="{StaticResource AccentBtn}" Margin="0,0,6,0"/>
-                                    <Button x:Name="btnUndoTweaks" Content="  Undo Selected" Style="{StaticResource DangerBtn}"/>
+                                    <Button x:Name="btnUndoTweaks" Content="  Restore Last Set" Style="{StaticResource DangerBtn}"/>
                                 </StackPanel>
                             </DockPanel>
                         </Border>
@@ -1069,6 +1244,10 @@ $pageInstall = $window.FindName('pageInstall')
 $pageTweaks  = $window.FindName('pageTweaks')
 $pageConfig  = $window.FindName('pageConfig')
 $pageUpdates = $window.FindName('pageUpdates')
+$txtEnterpriseBanner = $window.FindName('txtEnterpriseBanner')
+$btnAuditTweaks = $window.FindName('btnAuditTweaks')
+$btnDryRunTweaks = $window.FindName('btnDryRunTweaks')
+$btnExportADMX = $window.FindName('btnExportADMX')
 
 # Nav buttons
 $navInstall = $window.FindName('navInstall')
@@ -1110,6 +1289,12 @@ $navConfig.Add_Click({  Switch-Page $pageConfig   $navConfig })
 $navUpdates.Add_Click({ Switch-Page $pageUpdates $navUpdates })
 
 $btnClearLog.Add_Click({ $txtLog.Text = '' })
+
+$script:EnterpriseState = Get-WinForgeEnterpriseState
+if ($script:EnterpriseState.IsManaged) {
+    $txtEnterpriseBanner.Text = 'Enterprise management detected. Tweaks that write policy-managed registry paths will be blocked.'
+    $txtEnterpriseBanner.Visibility = 'Visible'
+}
 
 # ── System Info ────────────────────────────────────────────────────────────────
 try {
@@ -1501,8 +1686,19 @@ function Build-TweaksTab {
             $cb.Tag = $tweak.Key
             $cb.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom('#d4d4e8')
             $cb.FontSize = 12.5
-            $cb.ToolTip = $tweak.Desc
-            $sp.Children.Add($cb)
+            $meta = Get-WinForgeTweakInfo -Key $tweak.Key
+            $cb.ToolTip = "{0}`nRisk: {1}`nRevert: {2}" -f $tweak.Desc, $meta.Risk, $meta.Revert
+            $riskRow = New-Object System.Windows.Controls.StackPanel
+            $riskRow.Orientation = 'Horizontal'
+            $riskPip = New-Object System.Windows.Controls.TextBlock
+            $riskPip.Text = '●'
+            $riskPip.FontSize = 10
+            $riskPip.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFrom((Get-WinForgeTweakRiskBrush -Risk $meta.Risk))
+            $riskPip.Margin = [System.Windows.Thickness]::new(0,1,5,0)
+            $riskPip.ToolTip = "Risk: $($meta.Risk). $($meta.Revert)"
+            [void]$riskRow.Children.Add($riskPip)
+            [void]$riskRow.Children.Add($cb)
+            [void]$sp.Children.Add($riskRow)
 
             $desc = New-Object System.Windows.Controls.TextBlock
             $desc.Text = $tweak.Desc
@@ -1800,27 +1996,324 @@ function Invoke-Tweak {
     }
 }
 
+function Get-WinForgeTweakKey {
+    $keys = @()
+    foreach ($category in $script:TweakCategories.Keys) {
+        foreach ($tweak in $script:TweakCategories[$category]) { $keys += $tweak.Key }
+    }
+    return $keys
+}
+
+function ConvertTo-WinForgeDisplayValue {
+    param([AllowNull()]$Value, [bool]$Exists)
+    if (-not $Exists) { return '(missing)' }
+    if ($null -eq $Value -or [string]::IsNullOrEmpty([string]$Value)) { return '(empty)' }
+    return [string]$Value
+}
+
+function Get-WinForgeTweakPreviewText {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string[]]$Keys)
+
+    $lines = @('Review the proposed changes before applying them:', '')
+    foreach ($key in $Keys) {
+        $meta = Get-WinForgeTweakInfo -Key $key
+        $lines += ("[{0}] {1} (risk: {2})" -f $key, ($script:TweakCheckboxes[$key].Content), $meta.Risk)
+        foreach ($change in @(Get-WinForgeTweakChangeSet -Key $key)) {
+            if ($change.Kind -eq 'Action') {
+                $lines += ("  ACTION: {0}" -f $change.Name)
+            } elseif ($change.Kind -eq 'RegistryPath') {
+                $lines += ("  {0}\{1}: {2} -> {3}" -f $change.Path, $change.Name,
+                    (ConvertTo-WinForgeDisplayValue $change.Current $change.CurrentExists), $change.Target)
+            } else {
+                $lines += ("  {0} [{1}]: {2} -> {3}" -f $change.Path, $change.Name,
+                    (ConvertTo-WinForgeDisplayValue $change.Current $change.CurrentExists), $change.Target)
+            }
+        }
+        $lines += ("  Revert: {0}" -f $meta.Revert)
+        $lines += ''
+    }
+    $conflicts = @(Get-WinForgeThirdPartyTweakConflict)
+    if ($conflicts.Count -gt 0) {
+        $lines += 'Warning: third-party tweak markers were detected:'
+        foreach ($conflict in $conflicts) { $lines += ("  {0} ({1})" -f $conflict.Name, $conflict.Path) }
+        $lines += ''
+    }
+    return ($lines -join [Environment]::NewLine)
+}
+
+function Confirm-WinForgeTweakChange {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string[]]$Keys)
+
+    $preview = Get-WinForgeTweakPreviewText -Keys $Keys
+    foreach ($line in ($preview -split '\r?\n')) { if ($line) { Write-Log $line } }
+    $message = $preview
+    if ($message.Length -gt 7000) { $message = $message.Substring(0, 7000) + "`r`n... preview truncated; see the output log ..." }
+    $answer = [System.Windows.MessageBox]::Show(
+        $message,
+        'WinForge - Review tweak changes',
+        [System.Windows.MessageBoxButton]::YesNo,
+        [System.Windows.MessageBoxImage]::Warning)
+    return ($answer -eq [System.Windows.MessageBoxResult]::Yes)
+}
+
+function Get-WinForgeTweakHistoryDirectory {
+    [CmdletBinding()]
+    param([switch]$Create)
+    $root = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'WinForge\history'
+    if ($Create -and -not (Test-Path -LiteralPath $root)) { New-Item -Path $root -ItemType Directory -Force | Out-Null }
+    return $root
+}
+
+function Save-WinForgeTweakHistory {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string[]]$Keys)
+
+    $snapshots = @()
+    foreach ($key in $Keys) {
+        foreach ($change in @(Get-WinForgeTweakChangeSet -Key $key)) {
+            if ($change.Kind -eq 'Action') { continue }
+            $snapshots += [pscustomobject]@{
+                Key = $change.Key; Kind = $change.Kind; Path = $change.Path; Name = $change.Name
+                Exists = $change.CurrentExists; Value = $change.Current; Type = $change.Type
+            }
+        }
+    }
+    $history = [ordered]@{
+        SchemaVersion = 1
+        Created = (Get-Date).ToString('o')
+        Tweaks = @($Keys)
+        Registry = @($snapshots)
+    }
+    $directory = Get-WinForgeTweakHistoryDirectory -Create
+    $fileName = '{0:yyyyMMdd-HHmmssfff}.json' -f (Get-Date)
+    $path = Join-Path $directory $fileName
+    $history | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding UTF8
+
+    $oldFiles = @(Get-ChildItem -LiteralPath $directory -Filter '*.json' -File | Sort-Object LastWriteTime -Descending | Select-Object -Skip 20)
+    foreach ($oldFile in $oldFiles) { Remove-Item -LiteralPath $oldFile.FullName -Force -ErrorAction SilentlyContinue }
+    return $path
+}
+
+function Restore-WinForgeTweakHistory {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
+    param([string]$HistoryPath)
+
+    if ([string]::IsNullOrWhiteSpace($HistoryPath)) {
+        $HistoryPath = Get-ChildItem -LiteralPath (Get-WinForgeTweakHistoryDirectory) -Filter '*.json' -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
+    }
+    if (-not $HistoryPath -or -not (Test-Path -LiteralPath $HistoryPath)) {
+        Write-Log 'No tweak history snapshot is available.'
+        return $false
+    }
+    if (-not $PSCmdlet.ShouldProcess($HistoryPath, 'restore tweak registry snapshot')) { return $false }
+    try {
+        $history = Get-Content -LiteralPath $HistoryPath -Raw | ConvertFrom-Json
+        foreach ($snapshot in @($history.Registry)) {
+            if ($snapshot.Kind -eq 'RegistryPath') {
+                if ($snapshot.Exists) {
+                    New-Item -Path $snapshot.Path -Force | Out-Null
+                } else {
+                    Remove-Item -LiteralPath $snapshot.Path -Recurse -Force -ErrorAction SilentlyContinue
+                }
+                continue
+            }
+            if ($snapshot.Exists) {
+                if (-not (Test-Path -LiteralPath $snapshot.Path)) { New-Item -Path $snapshot.Path -Force | Out-Null }
+                $property = Get-ItemProperty -LiteralPath $snapshot.Path -Name $snapshot.Name -ErrorAction SilentlyContinue
+                if ($property) {
+                    Set-ItemProperty -LiteralPath $snapshot.Path -Name $snapshot.Name -Value $snapshot.Value -Force
+                } else {
+                    New-ItemProperty -LiteralPath $snapshot.Path -Name $snapshot.Name -Value $snapshot.Value -PropertyType $snapshot.Type -Force | Out-Null
+                }
+            } else {
+                Remove-ItemProperty -LiteralPath $snapshot.Path -Name $snapshot.Name -Force -ErrorAction SilentlyContinue
+            }
+        }
+        Write-Log ("[OK] Restored tweak history from {0}." -f (Split-Path -Leaf $HistoryPath))
+        return $true
+    } catch {
+        Write-Log ("[!] Failed to restore tweak history: {0}" -f $_.Exception.Message)
+        return $false
+    }
+}
+
+function Test-WinForgeTweakAllowed {
+    param([Parameter(Mandatory)][string]$Key)
+    if (-not $script:EnterpriseState -or -not $script:EnterpriseState.IsManaged) { return $true }
+    foreach ($change in @(Get-WinForgeTweakChangeSet -Key $Key)) {
+        if ($change.Path -match '^(HKLM|HKCU):\\SOFTWARE\\Policies\\|PolicyManager|Enrollments') { return $false }
+    }
+    return $true
+}
+
+function New-WinForgeDryRunScript {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
+    param([Parameter(Mandatory)][string[]]$Keys)
+
+    if (-not $PSCmdlet.ShouldProcess('dry-run script', 'generate')) { return }
+
+    $lines = @(
+        '# WinForge dry-run script generated from the selected tweak set.'
+        '# Review this file before execution. It invokes the same tweak executor as the GUI.'
+        '$ErrorActionPreference = ''Stop'''
+        '$winForgePath = Join-Path $PSScriptRoot ''WinForge.ps1'''
+        'if (-not (Test-Path -LiteralPath $winForgePath)) { throw ''WinForge.ps1 must be beside this script.'' }'
+        '. $winForgePath -NoElevation -NoLaunch'
+        ''
+    )
+    foreach ($key in $Keys) {
+        $escapedKey = $key.Replace("'", "''")
+        $lines += ("# {0}" -f $key)
+        $lines += ("Invoke-Tweak -Key '{0}'" -f $escapedKey)
+    }
+    return (($lines -join [Environment]::NewLine) + [Environment]::NewLine)
+}
+
 $window.FindName('btnRunTweaks').Add_Click({
     $selected = @()
     foreach ($kvp in $script:TweakCheckboxes.GetEnumerator()) {
         if ($kvp.Value.IsChecked -eq $true) { $selected += $kvp.Key }
     }
-    if ($selected.Count -eq 0) { Write-Log "No tweaks selected."; return }
+    if ($selected.Count -eq 0) { Write-Log 'No tweaks selected.'; return }
+
+    $blocked = @($selected | Where-Object { -not (Test-WinForgeTweakAllowed -Key $_) })
+    if ($blocked.Count -gt 0) {
+        Write-Log ("[!] Enterprise mode blocked: {0}" -f ($blocked -join ', '))
+        $selected = @($selected | Where-Object { $blocked -notcontains $_ })
+    }
+    if ($selected.Count -eq 0) { Write-Log 'No permitted tweaks remain.'; return }
+    if (-not (Confirm-WinForgeTweakChange -Keys $selected)) {
+        Write-Log 'Tweak run cancelled after preview.'
+        return
+    }
+    try {
+        $historyPath = Save-WinForgeTweakHistory -Keys $selected
+        Write-Log ("Snapshot saved to {0}." -f (Split-Path -Leaf $historyPath))
+    } catch {
+        Write-Log ("[!] Could not save the safety snapshot; no tweaks were applied: {0}" -f $_.Exception.Message)
+        return
+    }
     Write-Log "Running $($selected.Count) tweak(s)..."
     foreach ($key in $selected) { Invoke-Tweak -Key $key -Undo $false }
-    Write-Log "--- Tweaks complete ---"
+    Write-Log '--- Tweaks complete; use Restore Last Set to revert the snapshot. ---'
 })
 
 $window.FindName('btnUndoTweaks').Add_Click({
-    $selected = @()
-    foreach ($kvp in $script:TweakCheckboxes.GetEnumerator()) {
-        if ($kvp.Value.IsChecked -eq $true) { $selected += $kvp.Key }
-    }
-    if ($selected.Count -eq 0) { Write-Log "No tweaks selected to undo."; return }
-    Write-Log "Undoing $($selected.Count) tweak(s)..."
-    foreach ($key in $selected) { Invoke-Tweak -Key $key -Undo $true }
-    Write-Log "--- Undo complete ---"
+    Restore-WinForgeTweakHistory
 })
+
+function Get-WinForgeSelectedOrAllTweakKey {
+    $selected = @($script:TweakCheckboxes.GetEnumerator() | Where-Object { $_.Value.IsChecked -eq $true } | ForEach-Object { $_.Key })
+    if ($selected.Count -gt 0) { return $selected }
+    return @(Get-WinForgeTweakKey)
+}
+
+function Invoke-WinForgeTweakAudit {
+    $keys = Get-WinForgeSelectedOrAllTweakKey
+    Write-Log ("=== Tweak audit: {0} item(s) ===" -f $keys.Count)
+    foreach ($key in $keys) {
+        $changes = @(Get-WinForgeTweakChangeSet -Key $key)
+        $registryChanges = @($changes | Where-Object { $_.Kind -ne 'Action' })
+        if ($registryChanges.Count -eq 0) {
+            Write-Log ("[?] {0}: action requires manual verification." -f $key)
+            continue
+        }
+        $applied = $true
+        foreach ($change in $registryChanges) {
+            if ($change.Kind -eq 'RegistryPath') {
+                $valueMatches = ($change.CurrentExists -and $change.Target -eq 'exists') -or (-not $change.CurrentExists -and $change.Target -eq 'absent')
+            } else {
+                $valueMatches = $change.CurrentExists -and ([string]$change.Current -eq [string]$change.Target)
+            }
+            if (-not $valueMatches) { $applied = $false }
+            Write-Log ("  {0}: {1} -> {2}" -f $change.Name,
+                (ConvertTo-WinForgeDisplayValue $change.Current $change.CurrentExists), $change.Target)
+        }
+        Write-Log ("[{0}] {1}" -f (if ($applied) { 'APPLIED' } else { 'NOT APPLIED' }), $key)
+    }
+    Write-Log '--- Tweak audit complete ---'
+}
+
+function Export-WinForgeDryRun {
+    $keys = Get-WinForgeSelectedOrAllTweakKey
+    $dlg = New-Object Microsoft.Win32.SaveFileDialog
+    $dlg.Filter = 'PowerShell Script|*.ps1'
+    $dlg.FileName = 'WinForge-Tweak-DryRun.ps1'
+    if ($dlg.ShowDialog()) {
+        (New-WinForgeDryRunScript -Keys $keys) | Set-Content -LiteralPath $dlg.FileName -Encoding UTF8
+        Write-Log ("[OK] Dry-run script exported to {0}" -f $dlg.FileName)
+    }
+}
+
+function Export-WinForgeAdmx {
+    $keys = Get-WinForgeSelectedOrAllTweakKey
+    $dlg = New-Object Microsoft.Win32.SaveFileDialog
+    $dlg.Filter = 'ADMX Policy Template|*.admx'
+    $dlg.FileName = 'WinForge.admx'
+    if (-not $dlg.ShowDialog()) { return }
+
+    $admx = [System.Xml.XmlDocument]::new()
+    $declaration = $admx.CreateXmlDeclaration('1.0', 'utf-8', $null)
+    [void]$admx.AppendChild($declaration)
+    $root = $admx.CreateElement('policyDefinitions')
+    $root.SetAttribute('revision', '1.0')
+    $root.SetAttribute('schemaVersion', '1.0')
+    [void]$admx.AppendChild($root)
+    $namespaces = $admx.CreateElement('policyNamespaces')
+    $target = $admx.CreateElement('targetPrefix'); $target.SetAttribute('prefix','WinForge'); $target.SetAttribute('namespace','WinForge.Policies'); [void]$namespaces.AppendChild($target)
+    $using = $admx.CreateElement('using'); $using.SetAttribute('prefix','windows'); $using.SetAttribute('namespace','Microsoft.Policies.Windows'); [void]$namespaces.AppendChild($using)
+    [void]$root.AppendChild($namespaces)
+    $resources = $admx.CreateElement('resources'); $resources.SetAttribute('minRequiredRevision','1.0'); [void]$root.AppendChild($resources)
+    $categories = $admx.CreateElement('categories'); $category = $admx.CreateElement('category'); $category.SetAttribute('name','WinForge'); $category.SetAttribute('displayName','$(string.WinForgeCategory)'); [void]$categories.AppendChild($category); [void]$root.AppendChild($categories)
+    $policies = $admx.CreateElement('policies'); [void]$root.AppendChild($policies)
+
+    $strings = @{'WinForgeCategory' = 'WinForge Tweaks'}
+    $policyIndex = 0
+    foreach ($key in $keys) {
+        foreach ($change in @(Get-WinForgeTweakChangeSet -Key $key | Where-Object { $_.Kind -eq 'Registry' })) {
+            $policyIndex++
+            $policyId = "WinForge_{0}_{1}" -f ($key -replace '[^A-Za-z0-9_]','_'), $policyIndex
+            $displayId = "${policyId}_Display"
+            $explainId = "${policyId}_Explain"
+            $strings[$displayId] = "WinForge - $key - $($change.Name)"
+            $strings[$explainId] = "Sets $($change.Path)\$($change.Name) to $($change.Target); disabling the policy restores $($change.Undo)."
+            $policy = $admx.CreateElement('policy')
+            $policy.SetAttribute('name',$policyId)
+            $policy.SetAttribute('class', (if ($change.Path -like 'HKCU:*') { 'User' } else { 'Machine' }))
+            $policy.SetAttribute('displayName', "`$(string.$displayId)")
+            $policy.SetAttribute('explainText', "`$(string.$explainId)")
+            $policy.SetAttribute('key', ($change.Path -replace '^(HKLM|HKCU):\\',''))
+            $policy.SetAttribute('valueName', $change.Name)
+            $parent = $admx.CreateElement('parentCategory'); $parent.SetAttribute('ref','WinForge'); [void]$policy.AppendChild($parent)
+            $enabled = $admx.CreateElement('enabledValue')
+            if ($change.Type -eq 'DWord') { $node = $admx.CreateElement('decimal'); $node.SetAttribute('value',[string]$change.Target) } else { $node = $admx.CreateElement('string'); $node.SetAttribute('value',[string]$change.Target) }
+            [void]$enabled.AppendChild($node); [void]$policy.AppendChild($enabled)
+            $disabled = $admx.CreateElement('disabledValue')
+            if ($change.Type -eq 'DWord') { $node = $admx.CreateElement('decimal'); $node.SetAttribute('value',[string]$change.Undo) } else { $node = $admx.CreateElement('string'); $node.SetAttribute('value',[string]$change.Undo) }
+            [void]$disabled.AppendChild($node); [void]$policy.AppendChild($disabled)
+            [void]$policies.AppendChild($policy)
+        }
+    }
+    $admx.Save($dlg.FileName)
+
+    $admlDirectory = Join-Path (Split-Path -Parent $dlg.FileName) 'en-US'
+    New-Item -Path $admlDirectory -ItemType Directory -Force | Out-Null
+    $adml = [System.Xml.XmlDocument]::new()
+    [void]$adml.AppendChild($adml.CreateXmlDeclaration('1.0','utf-8',$null))
+    $admlRoot = $adml.CreateElement('policyDefinitionResources'); $admlRoot.SetAttribute('revision','1.0'); $admlRoot.SetAttribute('schemaVersion','1.0'); [void]$adml.AppendChild($admlRoot)
+    $admlResources = $adml.CreateElement('resources'); $stringTable = $adml.CreateElement('stringTable')
+    foreach ($entry in $strings.GetEnumerator()) { $string = $adml.CreateElement('string'); $string.SetAttribute('id',$entry.Key); $string.InnerText = $entry.Value; [void]$stringTable.AppendChild($string) }
+    [void]$admlResources.AppendChild($stringTable); [void]$admlRoot.AppendChild($admlResources)
+    $adml.Save((Join-Path $admlDirectory 'WinForge.adml'))
+    Write-Log ("[OK] ADMX and en-US ADML exported for {0} registry tweak(s)." -f $policyIndex)
+}
+
+$btnAuditTweaks.Add_Click({ Invoke-WinForgeTweakAudit })
+$btnDryRunTweaks.Add_Click({ Export-WinForgeDryRun })
+$btnExportADMX.Add_Click({ Export-WinForgeAdmx })
 
 # ── BUILD CONFIG TAB ──────────────────────────────────────────────────────────
 function Build-ConfigTab {
