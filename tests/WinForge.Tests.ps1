@@ -50,4 +50,47 @@ Describe 'WinForge core helpers' {
         $scriptText | Should -Match "Invoke-Tweak -Key 'Telemetry'"
         $scriptText | Should -Match "Invoke-Tweak -Key 'Hibernation'"
     }
+
+    It 'generates a first-logon payload for packages and tweaks' {
+        $payload = New-WinForgeFirstLogonScript -PackageIds @('', 'Git.Git') -TweakKeys @('', 'Telemetry')
+
+        $payload | Should -Match "winget install --id 'Git.Git'"
+        $payload | Should -Match '\$winForgePath = Join-Path \$PSScriptRoot'
+        $payload | Should -Match '-RunTweaks Telemetry'
+    }
+
+    It 'generates a valid FirstLogonCommands XML block' {
+        $xmlText = ConvertTo-WinForgeFirstLogonXml -ScriptPath '%SystemDrive%\WinForge\payload.ps1'
+        [xml]$xml = $xmlText
+
+        $xml.FirstLogonCommands.SynchronousCommand.Order | Should -Be '1'
+        $xml.FirstLogonCommands.SynchronousCommand.CommandLine | Should -Match 'PowerShell.exe'
+        $xmlText | Should -Match 'FirstLogonCommands'
+    }
+
+    It 'loads a local fleet preset into the profile controls' {
+        $path = Join-Path ([IO.Path]::GetTempPath()) ("winforge-fleet-{0}.json" -f [guid]::NewGuid())
+        try {
+            $profile = [pscustomobject]@{
+                WFApps = @('Git.Git')
+                WFTweaks = @('Telemetry')
+                WFCustomArgs = [pscustomobject]@{ 'Git.Git' = '--scope machine' }
+            }
+            $profile | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $path
+
+            Import-WinForgeFleetPreset -Source $path | Should -BeTrue
+            $script:AppCheckboxes['Git.Git'].IsChecked | Should -BeTrue
+            $script:TweakCheckboxes['Telemetry'].IsChecked | Should -BeTrue
+            $txtCustomArgs.Text | Should -Match 'Git\.Git=--scope machine'
+        } finally {
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+        }
+    }
+
+    It 'does not open a remote session when nothing is selected for apply' {
+        foreach ($cb in $script:AppCheckboxes.Values) { $cb.IsChecked = $false }
+        foreach ($cb in $script:TweakCheckboxes.Values) { $cb.IsChecked = $false }
+
+        Invoke-WinForgeRemoteMachine -ComputerName 'unused-host' | Should -BeFalse
+    }
 }

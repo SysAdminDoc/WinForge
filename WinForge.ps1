@@ -14,7 +14,8 @@
 [CmdletBinding()]
 param(
     [switch]$NoLaunch,
-    [switch]$NoElevation
+    [switch]$NoElevation,
+    [string[]]$RunTweaks
 )
 
 $script:WinForgeVersion = '0.1.0'
@@ -25,6 +26,7 @@ if (-not $NoElevation -and -not ([Security.Principal.WindowsPrincipal][Security.
     [Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $elevationArgs = "-ExecutionPolicy Bypass -File `"$PSCommandPath`""
     if ($NoLaunch) { $elevationArgs += ' -NoLaunch' }
+    if ($RunTweaks.Count -gt 0) { $elevationArgs += ' -RunTweaks ' + ($RunTweaks -join ',') }
     Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList $elevationArgs
     exit
 }
@@ -392,6 +394,274 @@ function Get-WinForgeEnterpriseState {
     )
     $sources = @($markers | Where-Object { Test-Path -LiteralPath $_.Path })
     return [pscustomobject]@{ IsManaged = ($sources.Count -gt 0); Sources = $sources }
+}
+
+function New-WinForgeFirstLogonScript {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
+    param([string[]]$PackageIds, [string[]]$TweakKeys)
+    if (-not $PSCmdlet.ShouldProcess('FirstLogonCommands payload', 'generate')) { return }
+
+    $PackageIds = @($PackageIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $TweakKeys = @($TweakKeys | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+
+    $lines = @(
+        '# WinForge FirstLogonCommands payload'
+        '# Copy this file to %SystemDrive%\WinForge before applying the XML block.'
+        '$ErrorActionPreference = ''Continue'''
+        ''
+    )
+    if (@($PackageIds).Count -gt 0) {
+        $lines += 'if (Get-Command winget -ErrorAction SilentlyContinue) {'
+        foreach ($packageId in @($PackageIds)) {
+            $safeId = $packageId.Replace("'", "''")
+            $lines += ("    winget install --id '{0}' --exact --accept-source-agreements --accept-package-agreements --silent" -f $safeId)
+        }
+        $lines += '} else { Write-Warning ''winget is unavailable; package installation was skipped.'' }'
+        $lines += ''
+    }
+    if (@($TweakKeys).Count -gt 0) {
+        $tweakList = ($TweakKeys -join ',')
+        $lines += ("`$winForgePath = Join-Path `$PSScriptRoot 'WinForge.ps1'")
+        $lines += ("if (Test-Path -LiteralPath `$winForgePath) {{ & `$winForgePath -NoLaunch -RunTweaks {0} }} else {{ Write-Warning 'WinForge.ps1 was not copied beside this deployment script.' }}" -f $tweakList)
+    }
+    return (($lines -join [Environment]::NewLine) + [Environment]::NewLine)
+}
+
+function ConvertTo-WinForgeFirstLogonXml {
+    [CmdletBinding()]
+    param([string]$ScriptPath = '%SystemDrive%\WinForge\WinForge-FirstLogon.ps1')
+
+    $escapedPath = [System.Security.SecurityElement]::Escape($ScriptPath)
+    $command = '&quot;PowerShell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;{0}&quot;' -f $escapedPath
+    $xmlLines = @(
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<FirstLogonCommands xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">'
+        '  <SynchronousCommand wcm:action="add">'
+        '    <Order>1</Order>'
+        '    <Description>Run WinForge provisioning payload</Description>'
+        ("    <CommandLine>{0}</CommandLine>" -f $command)
+        '  </SynchronousCommand>'
+        '</FirstLogonCommands>'
+    )
+    return (($xmlLines -join [Environment]::NewLine) + [Environment]::NewLine)
+}
+
+function Export-WinForgeFirstLogonCommand {
+    $dlg = New-Object Microsoft.Win32.SaveFileDialog
+    $dlg.Filter = 'Unattend XML block|*.xml'
+    $dlg.FileName = 'WinForge-FirstLogonCommands.xml'
+    if (-not $dlg.ShowDialog()) { return }
+    $packageIds = @(Get-SelectedApps)
+    $tweakKeys = @($script:TweakCheckboxes.GetEnumerator() | Where-Object { $_.Value.IsChecked -eq $true } | ForEach-Object { $_.Key })
+    $folder = Split-Path -Parent $dlg.FileName
+    $scriptPath = Join-Path $folder 'WinForge-FirstLogon.ps1'
+    (New-WinForgeFirstLogonScript -PackageIds $packageIds -TweakKeys $tweakKeys) | Set-Content -LiteralPath $scriptPath -Encoding UTF8
+    (ConvertTo-WinForgeFirstLogonXml) | Set-Content -LiteralPath $dlg.FileName -Encoding UTF8
+    Write-Log ("[OK] FirstLogonCommands exported to {0}; companion script: {1}" -f $dlg.FileName, $scriptPath)
+    Write-Log 'Copy the companion script and WinForge.ps1 to %SystemDrive%\WinForge on the target image.'
+}
+
+function Set-WinForgeConfigObject {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Config)
+
+    foreach ($cb in $script:AppCheckboxes.Values) { $cb.IsChecked = $false }
+    foreach ($cb in $script:TweakCheckboxes.Values) { $cb.IsChecked = $false }
+    if ($Config.WFApps) {
+        foreach ($id in @($Config.WFApps)) {
+            if ($script:AppCheckboxes.ContainsKey([string]$id)) { $script:AppCheckboxes[[string]$id].IsChecked = $true }
+        }
+    }
+    if ($Config.WFTweaks) {
+        foreach ($key in @($Config.WFTweaks)) {
+            if ($script:TweakCheckboxes.ContainsKey([string]$key)) { $script:TweakCheckboxes[[string]$key].IsChecked = $true }
+        }
+    }
+    $txtCustomArgs.Text = ''
+    if ($Config.WFCustomArgs) {
+        $customLines = foreach ($property in $Config.WFCustomArgs.PSObject.Properties) { "{0}={1}" -f $property.Name, $property.Value }
+        $txtCustomArgs.Text = $customLines -join '; '
+    }
+}
+
+function Get-WinForgeFleetPresetContent {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Source)
+
+    if ($Source -match '^https?://') {
+        return (Invoke-WebRequest -UseBasicParsing -Uri $Source -TimeoutSec 30 -ErrorAction Stop).Content
+    }
+    if (-not (Test-Path -LiteralPath $Source)) { throw "Fleet preset was not found: $Source" }
+    return Get-Content -LiteralPath $Source -Raw -ErrorAction Stop
+}
+
+function Import-WinForgeFleetPreset {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Source)
+
+    try {
+        $config = Get-WinForgeFleetPresetContent -Source $Source | ConvertFrom-Json
+        if (-not $config.WFApps -and -not $config.WFTweaks) { throw 'The preset does not contain WFApps or WFTweaks.' }
+        Set-WinForgeConfigObject -Config $config
+        if ($txtFleetPresetSource) { $txtFleetPresetSource.Text = $Source }
+        Write-Log ("[OK] Fleet preset loaded from {0}." -f $Source)
+        return $true
+    } catch {
+        Write-Log ("[!] Fleet preset load failed: {0}" -f $_.Exception.Message)
+        return $false
+    }
+}
+
+function Get-WinForgeRemoteTweakSelection {
+    [CmdletBinding()]
+    param([switch]$Audit)
+
+    $keys = @($script:TweakCheckboxes.GetEnumerator() |
+        Where-Object { $_.Value.IsChecked -eq $true } |
+        ForEach-Object { $_.Key })
+    if ($keys.Count -gt 0) { return $keys }
+    if ($Audit) { return @(Get-WinForgeTweakKey) }
+    return @()
+}
+
+function Invoke-WinForgeRemoteMachine {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ComputerName, [switch]$Audit)
+
+    $keys = @(Get-WinForgeRemoteTweakSelection -Audit:$Audit)
+    $changes = @($keys | ForEach-Object { Get-WinForgeTweakChangeSet -Key $_ } | Where-Object { $_.Kind -ne 'Action' })
+    $packageIds = @(Get-SelectedApps)
+    if (-not $Audit -and $keys.Count -eq 0 -and $packageIds.Count -eq 0) {
+        Write-Log 'Select at least one application or tweak before applying to a remote machine.'
+        return $false
+    }
+    try {
+        Write-Log ("Connecting to {0} using current credentials..." -f $ComputerName)
+        $session = New-PSSession -ComputerName $ComputerName -ErrorAction Stop
+        if ($Audit) {
+            $results = Invoke-Command -Session $session -ScriptBlock {
+                param($RemoteChanges)
+                foreach ($change in $RemoteChanges) {
+                    $current = $null
+                    $exists = Test-Path -LiteralPath $change.Path
+                    if ($exists -and $change.Kind -eq 'RegistryPath') { $current = 'exists' }
+                    elseif ($exists) {
+                        $property = Get-ItemProperty -LiteralPath $change.Path -Name $change.Name -ErrorAction SilentlyContinue
+                        if ($property) { $current = $property.PSObject.Properties[$change.Name].Value }
+                    }
+                    [pscustomobject]@{ Path = $change.Path; Name = $change.Name; Current = $current; Target = $change.Target; Applied = ($null -ne $current -and [string]$current -eq [string]$change.Target) }
+                }
+            } -ArgumentList (,$changes)
+            foreach ($result in @($results)) { Write-Log ("[{0}] {1}\{2}: {3} (target {4})" -f (if ($result.Applied) { 'APPLIED' } else { 'NOT APPLIED' }), $result.Path, $result.Name, $result.Current, $result.Target) }
+            Write-Log ("[OK] Remote audit complete for {0}." -f $ComputerName)
+        } else {
+            $remoteOutput = @(Invoke-Command -Session $session -ScriptBlock {
+                param($RemotePackages, $RemoteChanges, $RemoteKeys)
+                $ErrorActionPreference = 'Continue'
+                if (Get-Command winget -ErrorAction SilentlyContinue) {
+                    foreach ($id in $RemotePackages) { & winget install --id $id --exact --accept-source-agreements --accept-package-agreements --silent }
+                }
+                foreach ($change in $RemoteChanges) {
+                    try {
+                        if ($change.Kind -eq 'RegistryPath') {
+                            if ($change.Target -eq 'exists') { New-Item -Path $change.Path -Force | Out-Null }
+                            else { Remove-Item -LiteralPath $change.Path -Recurse -Force -ErrorAction SilentlyContinue }
+                        } elseif ($null -ne $change.Target) {
+                            if (-not (Test-Path -LiteralPath $change.Path)) { New-Item -Path $change.Path -Force | Out-Null }
+                            if (Get-ItemProperty -LiteralPath $change.Path -Name $change.Name -ErrorAction SilentlyContinue) { Set-ItemProperty -LiteralPath $change.Path -Name $change.Name -Value $change.Target -Force }
+                            else { New-ItemProperty -LiteralPath $change.Path -Name $change.Name -Value $change.Target -PropertyType $change.Type -Force | Out-Null }
+                        }
+                    } catch { Write-Warning ("Registry change failed for {0}\{1}: {2}" -f $change.Path, $change.Name, $_.Exception.Message) }
+                }
+                foreach ($key in $RemoteKeys) {
+                    switch ($key) {
+                        'RestorePoint' { try { Checkpoint-Computer -Description 'WinForge Restore Point' -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop } catch { Write-Warning ("Restore point failed: {0}" -f $_.Exception.Message) } }
+                        'Telemetry' { Stop-Service -Name 'DiagTrack' -Force -ErrorAction SilentlyContinue; Set-Service -Name 'DiagTrack' -StartupType Disabled -ErrorAction SilentlyContinue }
+                        'Hibernation' { & powercfg /h off 2>$null }
+                        'PS7Telemetry' { [Environment]::SetEnvironmentVariable('POWERSHELL_TELEMETRY_OPTOUT','1','Machine') }
+                        'TempFiles' { Remove-Item "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item 'C:\Windows\Temp\*' -Recurse -Force -ErrorAction SilentlyContinue }
+                        'ServicesManual' { foreach ($service in @('DiagTrack','dmwappushservice','SysMain','WSearch','MapsBroker','lfsvc','RetailDemo','wisvc')) { Set-Service -Name $service -StartupType Manual -ErrorAction SilentlyContinue; Stop-Service -Name $service -Force -ErrorAction SilentlyContinue } }
+                        'DiskCleanup' { Start-Process -FilePath 'cleanmgr.exe' -ArgumentList '/sagerun:1' -WindowStyle Hidden -ErrorAction SilentlyContinue }
+                        'UltimatePower' { & powercfg /duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 2>$null; $plans = & powercfg /list 2>$null | Out-String; if ($plans -match '([0-9a-f-]{36}).*Ultimate') { & powercfg /setactive $Matches[1] 2>$null } }
+                    }
+                }
+            } -ArgumentList (,$packageIds), (,$changes), (,$keys))
+            foreach ($line in $remoteOutput) { if ($line) { Write-Log ("[remote] {0}" -f $line) } }
+            Write-Log ("[OK] Remote apply completed for {0}." -f $ComputerName)
+        }
+        Remove-PSSession -Session $session -ErrorAction SilentlyContinue
+        return $true
+    } catch {
+        if ($session) { Remove-PSSession -Session $session -ErrorAction SilentlyContinue }
+        Write-Log ("[!] Remote operation failed: {0}" -f $_.Exception.Message)
+        return $false
+    }
+}
+
+function Register-WinForgeDailyUpgradeTask {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
+    param()
+    if (-not $PSCmdlet.ShouldProcess('WinForge Daily Package Upgrade', 'register scheduled task')) { return }
+    $taskCommand = 'PowerShell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "& { winget upgrade --all --accept-source-agreements --accept-package-agreements --silent; if (Get-Command choco -ErrorAction SilentlyContinue) { choco upgrade all --yes --no-progress } }"'
+    $taskArgs = @('/Create','/TN','WinForge Daily Package Upgrade','/SC','DAILY','/ST','12:00','/RU','SYSTEM','/RL','HIGHEST','/TR',$taskCommand,'/F')
+    try {
+        $process = Start-Process -FilePath 'schtasks.exe' -ArgumentList $taskArgs -WindowStyle Hidden -Wait -PassThru -ErrorAction Stop
+        if ($process.ExitCode -eq 0) { Write-Log '[OK] Daily package upgrade task registered for 12:00.' }
+        else { Write-Log ("[!] Scheduled task registration returned exit code {0}." -f $process.ExitCode) }
+    } catch { Write-Log ("[!] Could not register scheduled task: {0}" -f $_.Exception.Message) }
+}
+
+function Repair-WinForgeWinget {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
+    param()
+    if (-not $PSCmdlet.ShouldProcess('Microsoft Desktop App Installer', 're-register App Installer')) { return }
+    try {
+        $packages = @(Get-AppxPackage -Name 'Microsoft.DesktopAppInstaller' -AllUsers -ErrorAction Stop)
+        if ($packages.Count -eq 0) { throw 'Microsoft.DesktopAppInstaller was not found.' }
+        foreach ($package in $packages) {
+            $manifest = Join-Path $package.InstallLocation 'AppXManifest.xml'
+            if (Test-Path -LiteralPath $manifest) {
+                Add-AppxPackage -DisableDevelopmentMode -Register $manifest -ErrorAction Stop
+            }
+        }
+        Write-Log '[OK] App Installer was re-registered. Restart WinForge and retry winget.'
+    } catch { Write-Log ("[!] Winget repair failed: {0}" -f $_.Exception.Message) }
+}
+
+function Start-WinForgeHealthCheck {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
+    param()
+    if (-not $PSCmdlet.ShouldProcess('local Windows installation', 'run health check')) { return }
+    if ($script:HealthJob) { Write-Log 'A health check is already running.'; return }
+    Write-Log 'Starting post-install health check (SFC verify, DISM CheckHealth, firewall audit)...'
+    $script:HealthJob = Start-Job -ScriptBlock {
+        $report = @('WinForge Post-install Health Report', ('Generated: {0}' -f (Get-Date).ToString('o')), '')
+        $report += '=== SFC /verifyonly ==='
+        try { $report += (& sfc /verifyonly 2>&1 | Out-String).Trim() } catch { $report += $_.Exception.Message }
+        $report += ''; $report += '=== DISM /CheckHealth ==='
+        try { $report += (& DISM /Online /Cleanup-Image /CheckHealth 2>&1 | Out-String).Trim() } catch { $report += $_.Exception.Message }
+        $report += ''; $report += '=== Firewall Profiles ==='
+        try { $report += (Get-NetFirewallProfile | Select-Object Name,Enabled,DefaultInboundAction,DefaultOutboundAction | Format-Table -AutoSize | Out-String).Trim() } catch { $report += $_.Exception.Message }
+        return $report
+    }
+    $timer = New-Object System.Windows.Threading.DispatcherTimer
+    $timer.Interval = [TimeSpan]::FromMilliseconds(750)
+    $timer.Tag = @{ Job = $script:HealthJob; Timer = $timer }
+    $timer.Add_Tick({
+        if ($this.Tag.Job.State -in @('Completed','Failed','Stopped')) {
+            $this.Stop()
+            $report = @(Receive-Job -Job $this.Tag.Job -ErrorAction SilentlyContinue)
+            Remove-Job -Job $this.Tag.Job -Force -ErrorAction SilentlyContinue
+            $directory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'WinForge'
+            New-Item -Path $directory -ItemType Directory -Force | Out-Null
+            $path = Join-Path $directory ('health-report-{0:yyyyMMdd-HHmmss}.txt' -f (Get-Date))
+            $report | Set-Content -LiteralPath $path -Encoding UTF8
+            foreach ($line in $report | Select-Object -First 30) { if ($line) { Write-Log ([string]$line) } }
+            Write-Log ("[OK] Health report saved to {0}" -f $path)
+            $script:HealthJob = $null
+        }
+    }.GetNewClosure())
+    $timer.Start()
 }
 
 # ── Core helpers ──────────────────────────────────────────────────────────────
@@ -973,6 +1243,7 @@ $xaml = @'
                     <Button x:Name="navInstall" Content="  Install" Style="{StaticResource NavBtnActive}"/>
                     <Button x:Name="navTweaks"  Content="  Tweaks" Style="{StaticResource NavBtn}"/>
                     <Button x:Name="navConfig"  Content="  Config" Style="{StaticResource NavBtn}"/>
+                    <Button x:Name="navDeploy"  Content="  Deploy" Style="{StaticResource NavBtn}"/>
                     <Button x:Name="navUpdates" Content="  Updates" Style="{StaticResource NavBtn}"/>
                     <Border Height="1" Background="#1e1e36" Margin="8,12"/>
                     <TextBlock Text="QUICK ACTIONS" FontSize="9" Foreground="#444460" FontWeight="Bold" Margin="14,4,0,8"/>
@@ -1146,6 +1417,53 @@ $xaml = @'
                     </DockPanel>
                 </Grid>
 
+                <!-- DEPLOYMENT PAGE -->
+                <Grid x:Name="pageDeploy" Visibility="Collapsed">
+                    <DockPanel>
+                        <Border DockPanel.Dock="Top" Padding="24,18,24,14" Background="#0d0d16">
+                            <StackPanel>
+                                <TextBlock Text="Deployment" FontSize="22" FontWeight="Bold" Foreground="#e8e8f0"/>
+                                <TextBlock Text="Export repeatable setup blocks, reach remote machines, and load fleet presets" FontSize="12" Foreground="#666680" Margin="0,4,0,0"/>
+                            </StackPanel>
+                        </Border>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24,14">
+                            <StackPanel MaxWidth="760" HorizontalAlignment="Left">
+                                <Border Background="#12121e" CornerRadius="8" Padding="20" Margin="0,0,0,14" BorderBrush="#1e1e36" BorderThickness="1">
+                                    <StackPanel>
+                                        <TextBlock Text="MDT / Autounattend" FontSize="16" FontWeight="Bold" Foreground="#e8e8f0" Margin="0,0,0,8"/>
+                                        <TextBlock Text="Export a FirstLogonCommands XML block and a companion script for the current selections." FontSize="12" Foreground="#666680" TextWrapping="Wrap" Margin="0,0,0,14"/>
+                                        <WrapPanel>
+                                            <Button x:Name="btnExportMDT" Content="Export FirstLogonCommands" Style="{StaticResource AccentBtn}" Margin="0,0,8,8"/>
+                                            <Button x:Name="btnHealthCheck" Content="Post-install Health Check" Style="{StaticResource SecondaryBtn}" Margin="0,0,8,8"/>
+                                        </WrapPanel>
+                                    </StackPanel>
+                                </Border>
+                                <Border Background="#12121e" CornerRadius="8" Padding="20" Margin="0,0,0,14" BorderBrush="#1e1e36" BorderThickness="1">
+                                    <StackPanel>
+                                        <TextBlock Text="Remote PowerShell" FontSize="16" FontWeight="Bold" Foreground="#e8e8f0" Margin="0,0,0,8"/>
+                                        <TextBlock Text="Uses the current Windows credentials and an existing WinRM/PSRemoting configuration." FontSize="12" Foreground="#666680" TextWrapping="Wrap" Margin="0,0,0,14"/>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBox x:Name="txtRemoteComputer" Width="250" Height="32" VerticalContentAlignment="Center" Tag="Computer name or FQDN" ToolTip="Remote computer name or FQDN" Margin="0,0,8,0"/>
+                                            <Button x:Name="btnRemoteAudit" Content="Audit Remote" Style="{StaticResource SecondaryBtn}" Margin="0,0,8,0"/>
+                                            <Button x:Name="btnRemoteApply" Content="Apply Remote" Style="{StaticResource AccentBtn}"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                                <Border Background="#12121e" CornerRadius="8" Padding="20" Margin="0,0,0,14" BorderBrush="#1e1e36" BorderThickness="1">
+                                    <StackPanel>
+                                        <TextBlock Text="Fleet Preset Library" FontSize="16" FontWeight="Bold" Foreground="#e8e8f0" Margin="0,0,0,8"/>
+                                        <TextBlock Text="Load a JSON profile from a local path, SMB share, or HTTPS Git URL. Set WINFORGE_PRESET_SOURCE to load it automatically at startup." FontSize="12" Foreground="#666680" TextWrapping="Wrap" Margin="0,0,0,14"/>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBox x:Name="txtFleetPresetSource" Width="500" Height="32" VerticalContentAlignment="Center" ToolTip="C:\\Profiles\\WinForge.json, \\server\\share\\profile.json, or https://..." Margin="0,0,8,0"/>
+                                            <Button x:Name="btnLoadFleetPreset" Content="Load Preset" Style="{StaticResource SecondaryBtn}"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </DockPanel>
+                </Grid>
+
                 <!-- UPDATES PAGE -->
                 <Grid x:Name="pageUpdates" Visibility="Collapsed">
                     <DockPanel>
@@ -1243,16 +1561,25 @@ $txtCustomArgs      = $window.FindName('txtCustomArgs')
 $pageInstall = $window.FindName('pageInstall')
 $pageTweaks  = $window.FindName('pageTweaks')
 $pageConfig  = $window.FindName('pageConfig')
+$pageDeploy  = $window.FindName('pageDeploy')
 $pageUpdates = $window.FindName('pageUpdates')
 $txtEnterpriseBanner = $window.FindName('txtEnterpriseBanner')
 $btnAuditTweaks = $window.FindName('btnAuditTweaks')
 $btnDryRunTweaks = $window.FindName('btnDryRunTweaks')
 $btnExportADMX = $window.FindName('btnExportADMX')
+$btnExportMDT = $window.FindName('btnExportMDT')
+$btnHealthCheck = $window.FindName('btnHealthCheck')
+$txtRemoteComputer = $window.FindName('txtRemoteComputer')
+$btnRemoteAudit = $window.FindName('btnRemoteAudit')
+$btnRemoteApply = $window.FindName('btnRemoteApply')
+$txtFleetPresetSource = $window.FindName('txtFleetPresetSource')
+$btnLoadFleetPreset = $window.FindName('btnLoadFleetPreset')
 
 # Nav buttons
 $navInstall = $window.FindName('navInstall')
 $navTweaks  = $window.FindName('navTweaks')
 $navConfig  = $window.FindName('navConfig')
+$navDeploy  = $window.FindName('navDeploy')
 $navUpdates = $window.FindName('navUpdates')
 $navExport  = $window.FindName('navExport')
 $navImport  = $window.FindName('navImport')
@@ -1270,8 +1597,8 @@ function Write-Log {
 }
 
 # ── Navigation ─────────────────────────────────────────────────────────────────
-$script:AllPages = @($pageInstall, $pageTweaks, $pageConfig, $pageUpdates)
-$script:AllNavBtns = @($navInstall, $navTweaks, $navConfig, $navUpdates)
+$script:AllPages = @($pageInstall, $pageTweaks, $pageConfig, $pageDeploy, $pageUpdates)
+$script:AllNavBtns = @($navInstall, $navTweaks, $navConfig, $navDeploy, $navUpdates)
 
 function Switch-Page {
     param([System.Windows.UIElement]$Page, [System.Windows.Controls.Button]$NavBtn)
@@ -1286,6 +1613,7 @@ function Switch-Page {
 $navInstall.Add_Click({ Switch-Page $pageInstall $navInstall })
 $navTweaks.Add_Click({  Switch-Page $pageTweaks  $navTweaks })
 $navConfig.Add_Click({  Switch-Page $pageConfig   $navConfig })
+$navDeploy.Add_Click({  Switch-Page $pageDeploy   $navDeploy })
 $navUpdates.Add_Click({ Switch-Page $pageUpdates $navUpdates })
 
 $btnClearLog.Add_Click({ $txtLog.Text = '' })
@@ -2315,6 +2643,22 @@ $btnAuditTweaks.Add_Click({ Invoke-WinForgeTweakAudit })
 $btnDryRunTweaks.Add_Click({ Export-WinForgeDryRun })
 $btnExportADMX.Add_Click({ Export-WinForgeAdmx })
 
+$btnExportMDT.Add_Click({ Export-WinForgeFirstLogonCommand })
+$btnHealthCheck.Add_Click({ Start-WinForgeHealthCheck })
+$btnRemoteAudit.Add_Click({
+    if ([string]::IsNullOrWhiteSpace($txtRemoteComputer.Text)) { Write-Log 'Enter a remote computer name first.'; return }
+    Invoke-WinForgeRemoteMachine -ComputerName $txtRemoteComputer.Text.Trim() -Audit
+})
+$btnRemoteApply.Add_Click({
+    if ([string]::IsNullOrWhiteSpace($txtRemoteComputer.Text)) { Write-Log 'Enter a remote computer name first.'; return }
+    Invoke-WinForgeRemoteMachine -ComputerName $txtRemoteComputer.Text.Trim()
+})
+$btnLoadFleetPreset.Add_Click({
+    if ([string]::IsNullOrWhiteSpace($txtFleetPresetSource.Text)) { Write-Log 'Enter a fleet preset path or URL first.'; return }
+    Import-WinForgeFleetPreset -Source $txtFleetPresetSource.Text.Trim()
+})
+$txtFleetPresetSource.Text = $env:WINFORGE_PRESET_SOURCE
+
 # ── BUILD CONFIG TAB ──────────────────────────────────────────────────────────
 function Build-ConfigTab {
     $pnlConfig.Children.Clear()
@@ -2420,6 +2764,13 @@ function Build-ConfigTab {
     }
 }
 Build-ConfigTab
+
+# Explicitly configured fleet sources are loaded once the controls and profile
+# maps exist. No network source is contacted unless the operator sets this
+# environment variable or presses Load Preset in the Deployment page.
+if (-not [string]::IsNullOrWhiteSpace($env:WINFORGE_PRESET_SOURCE)) {
+    Import-WinForgeFleetPreset -Source $env:WINFORGE_PRESET_SOURCE | Out-Null
+}
 
 # ── UPDATES TAB ────────────────────────────────────────────────────────────────
 $window.FindName('btnApplyDNS').Add_Click({
@@ -2591,6 +2942,17 @@ $navImport.Add_Click({
 })
 
 # ── Launch ─────────────────────────────────────────────────────────────────────
+if ($RunTweaks.Count -gt 0) {
+    $requestedTweaks = @($RunTweaks | Where-Object { $script:TweakCheckboxes.ContainsKey($_) -and (Test-WinForgeTweakAllowed -Key $_) })
+    if ($requestedTweaks.Count -gt 0) {
+        try {
+            $historyPath = Save-WinForgeTweakHistory -Keys $requestedTweaks
+            Write-Log ("Deployment snapshot saved to {0}." -f (Split-Path -Leaf $historyPath))
+            foreach ($key in $requestedTweaks) { Invoke-Tweak -Key $key -Undo $false }
+            Write-Log '--- Headless tweak deployment complete ---'
+        } catch { Write-Log ("[!] Headless tweak deployment failed: {0}" -f $_.Exception.Message) }
+    }
+}
 Write-Log "WinForge v0.1.0 initialized. Ready."
 Write-Log "System: $($txtSysInfo.Text -replace "`n",' | ')"
 if (-not $NoLaunch) {

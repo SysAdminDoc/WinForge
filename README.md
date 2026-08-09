@@ -31,6 +31,9 @@ DNS configuration (Google, Cloudflare, Quad9, OpenDNS, AdGuard), Windows Update 
 ### Config Profiles
 Export and import your selections (apps + tweaks) as JSON files, or export/import a DSC v3 `.winget` package bundle for replay through `winget configure`. Share configurations between machines or save favorite setups.
 
+### Deployment
+Export a `FirstLogonCommands` XML block with a companion PowerShell payload for MDT or Autounattend workflows. The Deployment page can audit or apply the selected apps and tweaks to a WinRM/PSRemoting target using the current Windows credentials, and can load a JSON fleet preset from a local path, SMB share, or HTTPS Git URL. Set `WINFORGE_PRESET_SOURCE` to load a preset at startup.
+
 ## Usage
 
 ```powershell
