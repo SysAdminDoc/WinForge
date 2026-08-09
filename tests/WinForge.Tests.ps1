@@ -130,4 +130,12 @@ Describe 'WinForge core helpers' {
         New-WinForgeSafePreset -Keys @('Telemetry') -WhatIf | Should -BeFalse
         (Test-Path -LiteralPath $safeRoot) | Should -Be $before
     }
+
+    It 'maps telemetry levels to Windows diagnostic policy values' {
+        Get-WinForgeTelemetryLevelValue -Level Off | Should -Be 0
+        Get-WinForgeTelemetryLevelValue -Level Basic | Should -Be 1
+        Get-WinForgeTelemetryLevelValue -Level Enhanced | Should -Be 2
+        Get-WinForgeTelemetryLevelValue -Level Full | Should -Be 3
+        Get-WinForgeTelemetryLevelDescription -Level Off | Should -Match 'Turn off'
+    }
 }

@@ -15,6 +15,7 @@
 param(
     [switch]$NoLaunch,
     [switch]$NoElevation,
+    [switch]$Tui,
     [string[]]$RunTweaks
 )
 
@@ -26,23 +27,30 @@ if (-not $NoElevation -and -not ([Security.Principal.WindowsPrincipal][Security.
     [Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $elevationArgs = "-ExecutionPolicy Bypass -File `"$PSCommandPath`""
     if ($NoLaunch) { $elevationArgs += ' -NoLaunch' }
+    if ($Tui) { $elevationArgs += ' -Tui' }
     if ($RunTweaks.Count -gt 0) { $elevationArgs += ' -RunTweaks ' + ($RunTweaks -join ',') }
-    Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList $elevationArgs
+    $elevationHost = if ($Tui) { Join-Path $PSHOME 'pwsh.exe' } else { 'powershell.exe' }
+    $elevationWindowStyle = if ($Tui) { 'Normal' } else { 'Hidden' }
+    Start-Process $elevationHost -Verb RunAs -WindowStyle $elevationWindowStyle -ArgumentList $elevationArgs
     exit
 }
 
 # ── Assemblies ─────────────────────────────────────────────────────────────────
-Add-Type -AssemblyName PresentationFramework
-Add-Type -AssemblyName PresentationCore
-Add-Type -AssemblyName WindowsBase
-Add-Type -AssemblyName System.Windows.Forms
+if (-not $Tui) {
+    Add-Type -AssemblyName PresentationFramework
+    Add-Type -AssemblyName PresentationCore
+    Add-Type -AssemblyName WindowsBase
+    Add-Type -AssemblyName System.Windows.Forms
+}
 
 # ── Hide Console ───────────────────────────────────────────────────────────────
-Add-Type -Name Win -Namespace Native -MemberDefinition @'
+if (-not $Tui) {
+    Add-Type -Name Win -Namespace Native -MemberDefinition @'
 [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
 [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 '@
-[Native.Win]::ShowWindow([Native.Win]::GetConsoleWindow(), 0) | Out-Null
+    [Native.Win]::ShowWindow([Native.Win]::GetConsoleWindow(), 0) | Out-Null
+}
 
 # ── App Data ───────────────────────────────────────────────────────────────────
 $script:AppCategories = [ordered]@{
@@ -394,6 +402,144 @@ function Get-WinForgeEnterpriseState {
     )
     $sources = @($markers | Where-Object { Test-Path -LiteralPath $_.Path })
     return [pscustomobject]@{ IsManaged = ($sources.Count -gt 0); Sources = $sources }
+}
+
+function Select-WinForgeTuiItems {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object[]]$Items, [Parameter(Mandatory)][string]$Title)
+
+    if (Get-Command Out-ConsoleGridView -ErrorAction SilentlyContinue) {
+        return @($Items | Out-ConsoleGridView -Title $Title -OutputMode Multiple)
+    }
+    Write-Host "`n$Title" -ForegroundColor Cyan
+    for ($index = 0; $index -lt $Items.Count; $index++) {
+        $item = $Items[$index]
+        $label = if ($item.Id) { "{0} [{1}]" -f $item.Name, $item.Id } else { "{0} [{1}]" -f $item.Name, $item.Key }
+        Write-Host ("  {0}. {1}" -f ($index + 1), $label)
+    }
+    $raw = Read-Host 'Enter comma-separated numbers (or press Enter to cancel)'
+    if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
+    $selectedIndexes = @($raw -split ',' | ForEach-Object { [int]$number = 0; if ([int]::TryParse($_.Trim(), [ref]$number)) { $number - 1 } })
+    return @($selectedIndexes | Where-Object { $_ -ge 0 -and $_ -lt $Items.Count } | ForEach-Object { $Items[$_] })
+}
+
+function Invoke-WinForgeTuiTweak {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Key)
+
+    foreach ($change in @(Get-WinForgeTweakChangeSet -Key $Key)) {
+        if ($change.Kind -eq 'RegistryPath') {
+            if ($change.Target -eq 'exists') { New-Item -Path $change.Path -Force | Out-Null }
+            else { Remove-Item -LiteralPath $change.Path -Recurse -Force -ErrorAction SilentlyContinue }
+        } elseif ($change.Kind -eq 'Registry') {
+            if (-not (Test-Path -LiteralPath $change.Path)) { New-Item -Path $change.Path -Force | Out-Null }
+            $property = Get-ItemProperty -LiteralPath $change.Path -Name $change.Name -ErrorAction SilentlyContinue
+            if ($property) { Set-ItemProperty -LiteralPath $change.Path -Name $change.Name -Value $change.Target -Force }
+            else { New-ItemProperty -LiteralPath $change.Path -Name $change.Name -Value $change.Target -PropertyType $change.Type -Force | Out-Null }
+        }
+    }
+    switch ($Key) {
+        'RestorePoint' { Checkpoint-Computer -Description 'WinForge Restore Point' -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop }
+        'Telemetry' { Stop-Service -Name 'DiagTrack' -Force -ErrorAction SilentlyContinue; Set-Service -Name 'DiagTrack' -StartupType Disabled -ErrorAction SilentlyContinue }
+        'Hibernation' { & powercfg /h off 2>$null }
+        'PS7Telemetry' { [Environment]::SetEnvironmentVariable('POWERSHELL_TELEMETRY_OPTOUT', '1', 'Machine') }
+        'TempFiles' { Remove-Item "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item 'C:\Windows\Temp\*' -Recurse -Force -ErrorAction SilentlyContinue }
+        'ServicesManual' { foreach ($service in @('DiagTrack','dmwappushservice','SysMain','WSearch','MapsBroker','lfsvc','RetailDemo','wisvc')) { Set-Service -Name $service -StartupType Manual -ErrorAction SilentlyContinue; Stop-Service -Name $service -Force -ErrorAction SilentlyContinue } }
+        'DiskCleanup' { Start-Process -FilePath 'cleanmgr.exe' -ArgumentList '/sagerun:1' -ErrorAction SilentlyContinue }
+        'UltimatePower' { & powercfg /duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 2>$null }
+    }
+}
+
+function Start-WinForgeTui {
+    [CmdletBinding()]
+    param()
+
+    if (@($RunTweaks).Count -gt 0) {
+        foreach ($key in @($RunTweaks)) { Invoke-WinForgeTuiTweak -Key $key }
+        return
+    }
+    $apps = @($script:AppCategories.GetEnumerator() | ForEach-Object {
+        $category = $_.Key
+        $_.Value | ForEach-Object { [pscustomobject]@{ Category = $category; Name = $_.Name; Id = $_.Id } }
+    })
+    $tweaks = @($script:TweakCategories.GetEnumerator() | ForEach-Object {
+        $category = $_.Key
+        $_.Value | ForEach-Object {
+            if ($_.Key -eq 'Recall' -and [System.Environment]::OSVersion.Version.Build -lt 26100) { return }
+            [pscustomobject]@{ Category = $category; Name = $_.Name; Key = $_.Key }
+        }
+    })
+    Write-Host 'WinForge PowerShell 7 TUI' -ForegroundColor Magenta
+    Write-Host 'ConsoleGuiTools is used automatically when Out-ConsoleGridView is available.' -ForegroundColor DarkGray
+    while ($true) {
+        Write-Host "`n1. Install applications`n2. Apply tweaks`n3. Exit" -ForegroundColor Cyan
+        switch (Read-Host 'Choose an action') {
+            '1' {
+                $selectedApps = @(Select-WinForgeTuiItems -Items $apps -Title 'Select applications')
+                if ($selectedApps.Count -eq 0) { continue }
+                if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { Write-Warning 'winget is unavailable.'; continue }
+                foreach ($app in $selectedApps) {
+                    Write-Host ("Installing {0} ({1})..." -f $app.Name, $app.Id) -ForegroundColor Yellow
+                    & winget install --id $app.Id --exact --accept-source-agreements --accept-package-agreements
+                }
+            }
+            '2' {
+                $selectedTweaks = @(Select-WinForgeTuiItems -Items $tweaks -Title 'Select tweaks')
+                if ($selectedTweaks.Count -eq 0) { continue }
+                foreach ($tweak in $selectedTweaks) {
+                    try { Invoke-WinForgeTuiTweak -Key $tweak.Key; Write-Host ("Applied: {0}" -f $tweak.Name) -ForegroundColor Green }
+                    catch { Write-Warning ("{0}: {1}" -f $tweak.Name, $_.Exception.Message) }
+                }
+            }
+            '3' { return }
+            default { Write-Warning 'Choose 1, 2, or 3.' }
+        }
+    }
+}
+
+if ($Tui) {
+    Start-WinForgeTui
+    exit
+}
+
+function Get-WinForgePlatformInfo {
+    [CmdletBinding()]
+    param()
+
+    $build = [System.Environment]::OSVersion.Version.Build
+    $caption = 'Windows'
+    $edition = 'Unknown'
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+        $caption = [string]$os.Caption
+        if ($os.BuildNumber) { $build = [int]$os.BuildNumber }
+    } catch { Write-Debug ("Operating system query failed: {0}" -f $_.Exception.Message) }
+    try {
+        $currentVersion = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+        if ($currentVersion.EditionID) { $edition = [string]$currentVersion.EditionID }
+    } catch { Write-Debug ("Windows edition query failed: {0}" -f $_.Exception.Message) }
+    $architecture = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+    $isArm64 = $architecture -eq 'ARM64'
+    $isWindows11 = ($build -ge 22000) -or ($caption -match 'Windows 11')
+    [pscustomobject]@{
+        Caption = $caption
+        Edition = $edition
+        Build = $build
+        Architecture = $architecture
+        IsWindows11 = $isWindows11
+        IsArm64 = $isArm64
+        RecallApplicable = ($isWindows11 -and $build -ge 26100)
+    }
+}
+
+$script:PlatformInfo = Get-WinForgePlatformInfo
+
+function Test-WinForgeTweakApplicable {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Key)
+
+    if ($Key -eq 'Recall') { return [bool]$script:PlatformInfo.RecallApplicable }
+    return $true
 }
 
 function New-WinForgeFirstLogonScript {
@@ -1518,6 +1664,19 @@ $xaml = @'
                                 </StackPanel>
                             </DockPanel>
                         </Border>
+                        <Border DockPanel.Dock="Top" Padding="24,8,24,8" Background="{DynamicResource Theme.Toolbar}">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="TELEMETRY LEVEL:" FontSize="10" Foreground="{DynamicResource Theme.TextFaint}" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                <ComboBox x:Name="cmbTelemetryLevel" Width="110" Height="28" VerticalAlignment="Center" Margin="0,0,8,0">
+                                    <ComboBoxItem Content="Off"/>
+                                    <ComboBoxItem Content="Basic"/>
+                                    <ComboBoxItem Content="Enhanced" IsSelected="True"/>
+                                    <ComboBoxItem Content="Full"/>
+                                </ComboBox>
+                                <Button x:Name="btnApplyTelemetryLevel" Content="Apply Level" Style="{StaticResource SecondaryBtn}" Padding="12,5" FontSize="11" Margin="0,0,10,0"/>
+                                <TextBlock x:Name="txtTelemetryDescription" Text="" FontSize="11" Foreground="{DynamicResource Theme.TextSubtle}" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24,14">
                             <StackPanel x:Name="pnlTweaks"/>
                         </ScrollViewer>
@@ -1581,6 +1740,14 @@ $xaml = @'
                                         </StackPanel>
                                     </StackPanel>
                                 </Border>
+                                <Border Background="{DynamicResource Theme.Card}" CornerRadius="8" Padding="20" Margin="0,0,0,14" BorderBrush="{DynamicResource Theme.Divider}" BorderThickness="1">
+                                    <StackPanel>
+                                        <TextBlock Text="Companion Tools" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource Theme.TextBright}" Margin="0,0,0,8"/>
+                                        <TextBlock Text="Discover installed SysAdminDoc tools or local plugin manifests without executing them automatically." FontSize="12" Foreground="{DynamicResource Theme.TextSubtle}" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                                        <TextBox x:Name="txtCompanionPlugins" IsReadOnly="True" Height="70" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Margin="0,0,0,8"/>
+                                        <Button x:Name="btnRefreshPlugins" Content="Refresh Plugins" Style="{StaticResource SecondaryBtn}" HorizontalAlignment="Left"/>
+                                    </StackPanel>
+                                </Border>
                             </StackPanel>
                         </ScrollViewer>
                     </DockPanel>
@@ -1635,6 +1802,8 @@ $xaml = @'
                                             <Button x:Name="btnCheckUpdates" Content="Check for Updates" Style="{StaticResource SecondaryBtn}" Margin="0,0,8,8"/>
                                             <Button x:Name="btnPauseUpdates" Content="Pause Updates (35 days)" Style="{StaticResource SecondaryBtn}" Margin="0,0,8,8"/>
                                             <Button x:Name="btnResetWU" Content="Reset Windows Update" Style="{StaticResource SecondaryBtn}" Margin="0,0,8,8"/>
+                                            <Button x:Name="btnSchedulePackageUpgrades" Content="Schedule Daily Package Upgrades" Style="{StaticResource SecondaryBtn}" Margin="0,0,8,8"/>
+                                            <Button x:Name="btnRepairWinget" Content="Repair WinGet" Style="{StaticResource SecondaryBtn}" Margin="0,0,8,8"/>
                                         </WrapPanel>
                                     </StackPanel>
                                 </Border>
@@ -1736,6 +1905,9 @@ $txtEnterpriseBanner = $window.FindName('txtEnterpriseBanner')
 $btnAuditTweaks = $window.FindName('btnAuditTweaks')
 $btnDryRunTweaks = $window.FindName('btnDryRunTweaks')
 $btnExportADMX = $window.FindName('btnExportADMX')
+$cmbTelemetryLevel = $window.FindName('cmbTelemetryLevel')
+$btnApplyTelemetryLevel = $window.FindName('btnApplyTelemetryLevel')
+$txtTelemetryDescription = $window.FindName('txtTelemetryDescription')
 $btnExportMDT = $window.FindName('btnExportMDT')
 $btnHealthCheck = $window.FindName('btnHealthCheck')
 $txtRemoteComputer = $window.FindName('txtRemoteComputer')
@@ -1743,6 +1915,8 @@ $btnRemoteAudit = $window.FindName('btnRemoteAudit')
 $btnRemoteApply = $window.FindName('btnRemoteApply')
 $txtFleetPresetSource = $window.FindName('txtFleetPresetSource')
 $btnLoadFleetPreset = $window.FindName('btnLoadFleetPreset')
+$txtCompanionPlugins = $window.FindName('txtCompanionPlugins')
+$btnRefreshPlugins = $window.FindName('btnRefreshPlugins')
 
 # Nav buttons
 $navInstall = $window.FindName('navInstall')
@@ -1766,6 +1940,77 @@ function Write-Log {
         $txtLog.ScrollToEnd()
     })
 }
+
+function Get-WinForgeCompanionPlugin {
+    [CmdletBinding()]
+    param()
+
+    $directories = @(
+        (Join-Path $PSScriptRoot 'plugins')
+        (Join-Path $env:ProgramData 'SysAdminDoc\WinForge\plugins')
+        (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'WinForge\plugins')
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
+    $plugins = @()
+    $seen = @{}
+    foreach ($directory in $directories) {
+        foreach ($manifest in @(Get-ChildItem -LiteralPath $directory -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+            if ($seen.ContainsKey($manifest.FullName)) { continue }
+            try {
+                $metadata = Get-Content -LiteralPath $manifest.FullName -Raw -ErrorAction Stop | ConvertFrom-Json
+                $plugins += [pscustomobject]@{
+                    Name = if ($metadata.Name) { [string]$metadata.Name } else { $manifest.BaseName }
+                    Description = if ($metadata.Description) { [string]$metadata.Description } else { 'Plugin manifest' }
+                    Path = $manifest.FullName
+                    EntryPoint = if ($metadata.EntryPoint) { [string]$metadata.EntryPoint } else { '' }
+                    Source = 'Manifest'
+                }
+                $seen[$manifest.FullName] = $true
+            } catch { Write-Debug ("Plugin manifest could not be read: {0}" -f $manifest.FullName) }
+        }
+        foreach ($scriptFile in @(Get-ChildItem -LiteralPath $directory -Filter '*.ps1' -File -ErrorAction SilentlyContinue)) {
+            if ($seen.ContainsKey($scriptFile.FullName)) { continue }
+            $plugins += [pscustomobject]@{
+                Name = $scriptFile.BaseName
+                Description = 'PowerShell plugin script'
+                Path = $scriptFile.FullName
+                EntryPoint = $scriptFile.FullName
+                Source = 'Script'
+            }
+            $seen[$scriptFile.FullName] = $true
+        }
+    }
+    foreach ($commandName in @('WURepair', 'DefenderShield')) {
+        $command = Get-Command $commandName -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($command) {
+            $plugins += [pscustomobject]@{
+                Name = $commandName
+                Description = 'Installed companion command'
+                Path = $command.Source
+                EntryPoint = $command.Name
+                Source = 'Command'
+            }
+        }
+    }
+    return $plugins
+}
+
+function Refresh-WinForgeCompanionPlugins {
+    [CmdletBinding()]
+    param()
+
+    $plugins = @(Get-WinForgeCompanionPlugin)
+    if ($plugins.Count -eq 0) {
+        $txtCompanionPlugins.Text = 'No companion plugins discovered in the local plugin paths.'
+    } else {
+        $txtCompanionPlugins.Text = ($plugins | ForEach-Object {
+            '{0} - {1} [{2}]' -f $_.Name, $_.Description, $_.Path
+        }) -join [Environment]::NewLine
+    }
+    if ($txtLog) { Write-Log ("[OK] Discovered {0} companion plugin(s)." -f $plugins.Count) }
+    return $plugins
+}
+
+Refresh-WinForgeCompanionPlugins | Out-Null
 
 function Register-WinForgeCrashHandler {
     [CmdletBinding()]
@@ -2059,6 +2304,9 @@ function Start-InstallQueue {
         Write-Log 'An installation is already in progress.'
         return
     }
+    if ($script:PlatformInfo.IsArm64) {
+        Write-Log '[!] ARM64 Windows detected. Winget will resolve architecture-specific manifests; unsupported packages may be skipped.'
+    }
     $apps = @(Get-SelectedApps)
     if ($apps.Count -eq 0) { Write-Log 'No applications selected.'; return }
     $concurrency = 1
@@ -2213,6 +2461,7 @@ function Build-TweaksTab {
         $grid.Orientation = 'Horizontal'
 
         foreach ($tweak in $script:TweakCategories[$category]) {
+            if (-not (Test-WinForgeTweakApplicable -Key $tweak.Key)) { continue }
             $card = New-Object System.Windows.Controls.Border
             $card.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, 'Theme.Card')
             $card.CornerRadius = [System.Windows.CornerRadius]::new(6)
@@ -2258,6 +2507,20 @@ function Build-TweaksTab {
     }
 }
 Build-TweaksTab
+
+$updateTelemetryDescription = {
+    if ($cmbTelemetryLevel.SelectedItem) {
+        $level = [string]$cmbTelemetryLevel.SelectedItem.Content
+        $txtTelemetryDescription.Text = Get-WinForgeTelemetryLevelDescription -Level $level
+    }
+}
+$cmbTelemetryLevel.Add_SelectionChanged($updateTelemetryDescription)
+$txtTelemetryDescription.Text = 'Send the additional diagnostic data level selected below.'
+$btnApplyTelemetryLevel.Add_Click({
+    if ($cmbTelemetryLevel.SelectedItem) {
+        Set-WinForgeTelemetryLevel -Level ([string]$cmbTelemetryLevel.SelectedItem.Content)
+    }
+})
 
 # Tweak Presets
 $window.FindName('btnTweakPresetEssential').Add_Click({
@@ -2770,6 +3033,46 @@ function Test-WinForgeTweakAllowed {
     return $true
 }
 
+function Get-WinForgeTelemetryLevelValue {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][ValidateSet('Off','Basic','Enhanced','Full')][string]$Level)
+
+    return @{'Off' = 0; 'Basic' = 1; 'Enhanced' = 2; 'Full' = 3}[$Level]
+}
+
+function Get-WinForgeTelemetryLevelDescription {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][ValidateSet('Off','Basic','Enhanced','Full')][string]$Level)
+
+    return @{
+        Off = 'Turn off the Windows telemetry policy where the edition permits it.'
+        Basic = 'Send the minimum diagnostic data required by Windows.'
+        Enhanced = 'Send additional diagnostic data to improve Windows reliability.'
+        Full = 'Use the full diagnostic data level and Windows feedback services.'
+    }[$Level]
+}
+
+function Set-WinForgeTelemetryLevel {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
+    param([Parameter(Mandatory)][ValidateSet('Off','Basic','Enhanced','Full')][string]$Level)
+
+    if (-not (Test-WinForgeTweakAllowed -Key 'Telemetry')) {
+        Write-Log 'Enterprise mode blocked the telemetry level change.'
+        return $false
+    }
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+    if (-not $PSCmdlet.ShouldProcess($path, "set telemetry level to $Level")) { return $false }
+    try {
+        if (-not (Test-Path -LiteralPath $path)) { New-Item -Path $path -Force | Out-Null }
+        Set-ItemProperty -LiteralPath $path -Name 'AllowTelemetry' -Value (Get-WinForgeTelemetryLevelValue -Level $Level) -Type DWord -Force
+        Write-Log ("[OK] Telemetry level set to {0}." -f $Level)
+        return $true
+    } catch {
+        Write-Log ("[!] Could not set telemetry level: {0}" -f $_.Exception.Message)
+        return $false
+    }
+}
+
 function New-WinForgeDryRunScript {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
     param([Parameter(Mandatory)][string[]]$Keys)
@@ -2977,6 +3280,7 @@ $btnLoadFleetPreset.Add_Click({
     if ([string]::IsNullOrWhiteSpace($txtFleetPresetSource.Text)) { Write-Log 'Enter a fleet preset path or URL first.'; return }
     Import-WinForgeFleetPreset -Source $txtFleetPresetSource.Text.Trim()
 })
+$btnRefreshPlugins.Add_Click({ Refresh-WinForgeCompanionPlugins | Out-Null })
 $txtFleetPresetSource.Text = $env:WINFORGE_PRESET_SOURCE
 
 # ── BUILD CONFIG TAB ──────────────────────────────────────────────────────────
@@ -3173,6 +3477,9 @@ $window.FindName('btnResetWU').Add_Click({
     Write-Log "[OK] Windows Update components reset."
 })
 
+$window.FindName('btnSchedulePackageUpgrades').Add_Click({ Register-WinForgeDailyUpgradeTask })
+$window.FindName('btnRepairWinget').Add_Click({ Repair-WinForgeWinget })
+
 # ── Export/Import Config ───────────────────────────────────────────────────────
 function Export-WinForgeWingetConfiguration {
     $apps = @(Get-SelectedApps)
@@ -3263,7 +3570,7 @@ $navImport.Add_Click({
 
 # ── Launch ─────────────────────────────────────────────────────────────────────
 if ($RunTweaks.Count -gt 0) {
-    $requestedTweaks = @($RunTweaks | Where-Object { $script:TweakCheckboxes.ContainsKey($_) -and (Test-WinForgeTweakAllowed -Key $_) })
+    $requestedTweaks = @($RunTweaks | Where-Object { $script:TweakCheckboxes.ContainsKey($_) -and (Test-WinForgeTweakApplicable -Key $_) -and (Test-WinForgeTweakAllowed -Key $_) })
     if ($requestedTweaks.Count -gt 0) {
         try {
             $historyPath = Save-WinForgeTweakHistory -Keys $requestedTweaks

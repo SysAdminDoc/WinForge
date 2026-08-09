@@ -22,6 +22,7 @@ Checkbox-driven system modifications with descriptions and tooltips:
 
 Every run shows a registry delta preview and saves a restore snapshot under `%LOCALAPPDATA%\WinForge\history\`. The Tweaks page also provides audit, dry-run script, and ADMX export actions, risk/revert guidance, third-party conflict warnings, and an enterprise-management guard for policy paths.
 The **Safe Preset** action additionally creates a Windows Restore Point and exports existing registry paths before applying the selected tweaks under `%LOCALAPPDATA%\WinForge\safe-presets\`.
+Telemetry controls expose Off, Basic, Enhanced, and Full levels with an explanation of the diagnostic-data tradeoff.
 
 ### Config
 Windows optional features and system fixes (.NET 3.5, Hyper-V, WSL, SFC, DISM, network reset). Legacy control panel shortcuts.
@@ -33,7 +34,7 @@ DNS configuration (Google, Cloudflare, Quad9, OpenDNS, AdGuard), Windows Update 
 Export and import your selections (apps + tweaks) as JSON files, or export/import a DSC v3 `.winget` package bundle for replay through `winget configure`. Share configurations between machines or save favorite setups.
 
 ### Deployment
-Export a `FirstLogonCommands` XML block with a companion PowerShell payload for MDT or Autounattend workflows. The Deployment page can audit or apply the selected apps and tweaks to a WinRM/PSRemoting target using the current Windows credentials, and can load a JSON fleet preset from a local path, SMB share, or HTTPS Git URL. Set `WINFORGE_PRESET_SOURCE` to load a preset at startup.
+Export a `FirstLogonCommands` XML block with a companion PowerShell payload for MDT or Autounattend workflows. The Deployment page can audit or apply the selected apps and tweaks to a WinRM/PSRemoting target using the current Windows credentials, load a JSON fleet preset from a local path, SMB share, or HTTPS Git URL, and discover local SysAdminDoc plugin manifests without executing them automatically. Set `WINFORGE_PRESET_SOURCE` to load a preset at startup.
 
 ### Appearance and Crash Reports
 Switch between Dark, Light, and High Contrast modes from the sidebar. Unhandled UI and application exceptions are recorded locally, without telemetry, at `%LOCALAPPDATA%\WinForge\crash.log`; use **Copy Crash Report** only when you choose to review or share the report.
@@ -44,6 +45,10 @@ Switch between Dark, Light, and High Contrast modes from the sidebar. Unhandled 
 # Auto-elevates to Administrator
 .\WinForge.ps1
 ```
+
+For a PowerShell 7 console workflow, use `pwsh .\WinForge.ps1 -Tui`. The TUI uses `Out-ConsoleGridView` when Microsoft.PowerShell.ConsoleGuiTools is installed and otherwise falls back to a numbered console selector. On ARM64 Windows, WinForge warns that package architecture support is resolved by the selected package manager.
+
+Support and feature requests: [GitHub Issues](https://github.com/SysAdminDoc/WinForge/issues)
 
 ## Requirements
 

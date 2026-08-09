@@ -12,6 +12,7 @@ All notable changes to WinForge will be documented in this file.
 - Added MDT/Autounattend FirstLogonCommands export, WinRM/PSRemoting deployment, and local/SMB/HTTPS fleet preset loading.
 - Added runtime Dark, Light, and High Contrast themes plus local-only crash logging with opt-in clipboard copying.
 - Added an explicit Safe Preset action that creates a Restore Point and registry exports before applying tweaks.
+- Added a PowerShell 7 TUI, optional ConsoleGuiTools selection, companion-plugin discovery, telemetry-level controls, ARM64 guidance, daily package-upgrade scheduling, and WinGet repair actions.
 
 ## [v0.1.0] - %Y->- (HEAD -> main, tag: v0.1.0, origin/main, origin/HEAD)
 
