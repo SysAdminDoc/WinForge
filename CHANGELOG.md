@@ -11,6 +11,7 @@ All notable changes to WinForge will be documented in this file.
 - Added tweak change previews, registry history restore, audit mode, dry-run scripts, ADMX export, risk guidance, conflict detection, and enterprise policy safeguards.
 - Added MDT/Autounattend FirstLogonCommands export, WinRM/PSRemoting deployment, and local/SMB/HTTPS fleet preset loading.
 - Added runtime Dark, Light, and High Contrast themes plus local-only crash logging with opt-in clipboard copying.
+- Added an explicit Safe Preset action that creates a Restore Point and registry exports before applying tweaks.
 
 ## [v0.1.0] - %Y->- (HEAD -> main, tag: v0.1.0, origin/main, origin/HEAD)
 

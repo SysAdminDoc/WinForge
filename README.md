@@ -21,6 +21,7 @@ Checkbox-driven system modifications with descriptions and tooltips:
 - **Privacy** - Advertising ID, app launch tracking, diagnostic data, clipboard history, speech recognition
 
 Every run shows a registry delta preview and saves a restore snapshot under `%LOCALAPPDATA%\WinForge\history\`. The Tweaks page also provides audit, dry-run script, and ADMX export actions, risk/revert guidance, third-party conflict warnings, and an enterprise-management guard for policy paths.
+The **Safe Preset** action additionally creates a Windows Restore Point and exports existing registry paths before applying the selected tweaks under `%LOCALAPPDATA%\WinForge\safe-presets\`.
 
 ### Config
 Windows optional features and system fixes (.NET 3.5, Hyper-V, WSL, SFC, DISM, network reset). Legacy control panel shortcuts.

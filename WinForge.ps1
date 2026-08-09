@@ -1512,6 +1512,7 @@ $xaml = @'
                                     <Button x:Name="btnExportADMX" Content="Export ADMX" Style="{StaticResource SecondaryBtn}" Margin="0,0,6,0"/>
                                     <Button x:Name="btnTweakSelectAll" Content="Select All" Style="{StaticResource SecondaryBtn}" Margin="0,0,6,0"/>
                                     <Button x:Name="btnTweakDeselectAll" Content="Clear All" Style="{StaticResource SecondaryBtn}" Margin="0,0,10,0"/>
+                                    <Button x:Name="btnSafePreset" Content="Safe Preset" Style="{StaticResource SuccessBtn}" Margin="0,0,6,0"/>
                                     <Button x:Name="btnRunTweaks" Content="  Run Tweaks" Style="{StaticResource AccentBtn}" Margin="0,0,6,0"/>
                                     <Button x:Name="btnUndoTweaks" Content="  Restore Last Set" Style="{StaticResource DangerBtn}"/>
                                 </StackPanel>
@@ -2637,6 +2638,85 @@ function Save-WinForgeTweakHistory {
     return $path
 }
 
+function Get-WinForgeSafePresetDirectory {
+    [CmdletBinding()]
+    param([switch]$Create)
+
+    $root = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'WinForge\safe-presets'
+    if ($Create -and -not (Test-Path -LiteralPath $root)) { New-Item -Path $root -ItemType Directory -Force | Out-Null }
+    return $root
+}
+
+function ConvertTo-WinForgeRegistryExportPath {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+
+    if ($Path.StartsWith('HKLM:\', [System.StringComparison]::OrdinalIgnoreCase)) { return ('HKLM\' + $Path.Substring(6)) }
+    if ($Path.StartsWith('HKCU:\', [System.StringComparison]::OrdinalIgnoreCase)) { return ('HKCU\' + $Path.Substring(6)) }
+    return $null
+}
+
+function New-WinForgeSafePreset {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
+    param([Parameter(Mandatory)][string[]]$Keys)
+
+    $directory = Get-WinForgeSafePresetDirectory
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmssfff'
+    $presetDirectory = Join-Path $directory $stamp
+    if (-not $PSCmdlet.ShouldProcess($presetDirectory, 'create restore point and registry exports')) { return $false }
+
+    Get-WinForgeSafePresetDirectory -Create | Out-Null
+    New-Item -Path $presetDirectory -ItemType Directory -Force | Out-Null
+    $restorePointCreated = $false
+    try {
+        if (-not (Get-Command Checkpoint-Computer -ErrorAction SilentlyContinue)) { throw 'Checkpoint-Computer is unavailable.' }
+        Checkpoint-Computer -Description "WinForge Safe Preset $stamp" -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop
+        $restorePointCreated = $true
+    } catch {
+        Write-Log ("[!] Safe preset could not create a Restore Point: {0}" -f $_.Exception.Message)
+    }
+
+    $paths = @($Keys | ForEach-Object { Get-WinForgeTweakChangeSet -Key $_ } |
+        Where-Object { $_.Kind -in @('Registry','RegistryPath') } |
+        ForEach-Object { ConvertTo-WinForgeRegistryExportPath -Path $_.Path } |
+        Where-Object { $_ } | Sort-Object -Unique)
+    $exports = @()
+    $missing = @()
+    $failed = @()
+    foreach ($nativePath in $paths) {
+        $providerPath = $nativePath -replace '^HKLM\\', 'HKLM:\' -replace '^HKCU\\', 'HKCU:\'
+        if (-not (Test-Path -LiteralPath $providerPath)) { $missing += $nativePath; continue }
+        $fileName = (($nativePath -replace '[\\/:*?"<>| ]', '_') + '.reg')
+        $exportPath = Join-Path $presetDirectory $fileName
+        try {
+            & reg.exe export $nativePath $exportPath /y 2>$null | Out-Null
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $exportPath)) { throw "reg.exe returned exit code $LASTEXITCODE." }
+            $exports += $exportPath
+        } catch {
+            $failed += [pscustomobject]@{ Path = $nativePath; Error = $_.Exception.Message }
+        }
+    }
+
+    $manifest = [ordered]@{
+        SchemaVersion = 1
+        Created = (Get-Date).ToString('o')
+        Tweaks = @($Keys)
+        RestorePointCreated = $restorePointCreated
+        RegistryExports = @($exports)
+        MissingRegistryPaths = @($missing)
+        FailedRegistryExports = @($failed)
+    }
+    $manifestPath = Join-Path $presetDirectory 'manifest.json'
+    $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+
+    if (-not $restorePointCreated -or $failed.Count -gt 0) {
+        Write-Log ("[!] Safe preset is incomplete; no tweaks were applied. Review {0}." -f $manifestPath)
+        return [pscustomobject]@{ Success = $false; Directory = $presetDirectory; Manifest = $manifestPath; RestorePointCreated = $restorePointCreated; RegistryExports = @($exports) }
+    }
+    Write-Log ("[OK] Safe preset created at {0}; registry exports: {1}." -f $presetDirectory, $exports.Count)
+    return [pscustomobject]@{ Success = $true; Directory = $presetDirectory; Manifest = $manifestPath; RestorePointCreated = $restorePointCreated; RegistryExports = @($exports) }
+}
+
 function Restore-WinForgeTweakHistory {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
     param([string]$HistoryPath)
@@ -2740,6 +2820,33 @@ $window.FindName('btnRunTweaks').Add_Click({
     Write-Log "Running $($selected.Count) tweak(s)..."
     foreach ($key in $selected) { Invoke-Tweak -Key $key -Undo $false }
     Write-Log '--- Tweaks complete; use Restore Last Set to revert the snapshot. ---'
+})
+
+$window.FindName('btnSafePreset').Add_Click({
+    $selected = @($script:TweakCheckboxes.GetEnumerator() | Where-Object { $_.Value.IsChecked -eq $true } | ForEach-Object { $_.Key })
+    if ($selected.Count -eq 0) { Write-Log 'Select at least one tweak for a Safe Preset.'; return }
+    $blocked = @($selected | Where-Object { -not (Test-WinForgeTweakAllowed -Key $_) })
+    if ($blocked.Count -gt 0) {
+        Write-Log ("[!] Enterprise mode blocked: {0}" -f ($blocked -join ', '))
+        $selected = @($selected | Where-Object { $blocked -notcontains $_ })
+    }
+    if ($selected.Count -eq 0) { Write-Log 'No permitted tweaks remain.'; return }
+    if (-not (Confirm-WinForgeTweakChange -Keys $selected)) {
+        Write-Log 'Safe Preset cancelled after preview.'
+        return
+    }
+    $safePreset = New-WinForgeSafePreset -Keys $selected
+    if (-not $safePreset -or -not $safePreset.Success) { return }
+    try {
+        $historyPath = Save-WinForgeTweakHistory -Keys $selected
+        Write-Log ("Snapshot saved to {0}." -f (Split-Path -Leaf $historyPath))
+    } catch {
+        Write-Log ("[!] Could not save the safety snapshot; no tweaks were applied: {0}" -f $_.Exception.Message)
+        return
+    }
+    Write-Log "Running safe preset with $($selected.Count) tweak(s)..."
+    foreach ($key in $selected) { Invoke-Tweak -Key $key -Undo $false }
+    Write-Log ("--- Safe Preset complete; restore files are under {0}. ---" -f $safePreset.Directory)
 })
 
 $window.FindName('btnUndoTweaks').Add_Click({

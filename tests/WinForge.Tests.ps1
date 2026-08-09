@@ -117,4 +117,17 @@ Describe 'WinForge core helpers' {
             if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
         }
     }
+
+    It 'converts registry provider paths for safe preset exports' {
+        ConvertTo-WinForgeRegistryExportPath -Path 'HKLM:\SOFTWARE\WinForge' | Should -Be 'HKLM\SOFTWARE\WinForge'
+        ConvertTo-WinForgeRegistryExportPath -Path 'HKCU:\Software\WinForge' | Should -Be 'HKCU\Software\WinForge'
+        ConvertTo-WinForgeRegistryExportPath -Path 'C:\Temp' | Should -BeNullOrEmpty
+    }
+
+    It 'honors WhatIf without creating a safe preset' {
+        $safeRoot = Get-WinForgeSafePresetDirectory
+        $before = Test-Path -LiteralPath $safeRoot
+        New-WinForgeSafePreset -Keys @('Telemetry') -WhatIf | Should -BeFalse
+        (Test-Path -LiteralPath $safeRoot) | Should -Be $before
+    }
 }
